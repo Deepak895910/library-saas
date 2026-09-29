@@ -15,7 +15,9 @@ type Student = {
   phone: string;
   shift: Shift;
   monthlyFee: number;
-  dueDate: string;
+  joiningDate: string; // YYYY-MM-DD
+  lastPaidDate: string | null; // YYYY-MM-DD
+  dueDate: string; // Current month's calculated due date
   status: Status;
 };
 
@@ -38,6 +40,17 @@ function formatINR(amount: number) {
   }).format(amount);
 }
 
+function formatDate(dateStr: string | null) {
+  if (!dateStr) return "-";
+  const date = new Date(dateStr);
+  if (isNaN(date.getTime())) return dateStr;
+  return date.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+}
+
 function shiftBadge(shift: Shift) {
   if (shift === "Morning") return "bg-amber-50 text-amber-700 ring-1 ring-amber-200";
   if (shift === "Evening") return "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200";
@@ -51,6 +64,40 @@ function statusBadge(status: Status) {
 }
 
 const SEAT_COLLATOR = { numeric: true, sensitivity: "base" } as const;
+
+// Calculate current cycle's Due Date & Status dynamically
+function calculateMonthlyDue(joiningDateStr: string, lastPaidDateStr: string | null): { dueDateText: string; status: Status } {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const joinDate = joiningDateStr ? new Date(joiningDateStr) : new Date();
+  const dueDay = isNaN(joinDate.getDate()) ? 1 : joinDate.getDate();
+
+  // Current month ki due date
+  const currentMonthDue = new Date(today.getFullYear(), today.getMonth(), dueDay);
+  currentMonthDue.setHours(0, 0, 0, 0);
+
+  const options: Intl.DateTimeFormatOptions = { day: "numeric", month: "short", year: "numeric" };
+  const dueDateText = currentMonthDue.toLocaleDateString("en-IN", options);
+
+  // Check if fees already paid for this current month's cycle
+  if (lastPaidDateStr) {
+    const lastPaid = new Date(lastPaidDateStr);
+    lastPaid.setHours(0, 0, 0, 0);
+    if (lastPaid >= currentMonthDue) {
+      return { dueDateText, status: "Paid" };
+    }
+  }
+
+  // Fees overdue / due today check
+  if (today.getTime() === currentMonthDue.getTime()) {
+    return { dueDateText, status: "Due Today" };
+  } else if (today.getTime() > currentMonthDue.getTime()) {
+    return { dueDateText, status: "Overdue" };
+  } else {
+    return { dueDateText, status: "Due Today" };
+  }
+}
 
 function LibraryView() {
   const router = useRouter();
@@ -69,14 +116,15 @@ function LibraryView() {
   const [toast, setToast] = useState<string | null>(null);
   const [formError, setFormError] = useState("");
 
+  const todayStr = new Date().toISOString().split("T")[0];
+
   const [form, setForm] = useState({
     seatNo: "",
     name: "",
     phone: "",
     shift: "Morning" as Shift,
     monthlyFee: "900",
-    dueDate: "29 Sep 2026",
-    status: "Due Today" as Status,
+    joiningDate: todayStr,
   });
 
   const handleLogout = () => {
@@ -87,7 +135,6 @@ function LibraryView() {
     router.replace("/");
   };
 
-  // 1. Pehle Session verify karein
   useEffect(() => {
     if (!libId) {
       router.replace("/");
@@ -95,7 +142,6 @@ function LibraryView() {
     }
 
     const sessionLibId = sessionStorage.getItem("active_library_id") || localStorage.getItem("active_library_id");
-
     if (!sessionLibId || sessionLibId.trim() !== libId.trim()) {
       router.replace("/");
       return;
@@ -104,10 +150,8 @@ function LibraryView() {
     setIsAuthorized(true);
   }, [libId, router]);
 
-  // 2. Data tabhi load karein jab verify ho jaye
   const loadData = async () => {
     if (!libId) return;
-
     setLoading(true);
 
     const { data: libData, error: libErr } = await supabase
@@ -143,21 +187,24 @@ function LibraryView() {
       .order("created_at", { ascending: false });
 
     if (stuData) {
-      const formatted: Student[] = stuData.map((item: any) => ({
-        id: item.id,
-        seatNo: item.seat_no,
-        name: item.name,
-        phone: item.phone,
-        shift: item.shift as Shift,
-        monthlyFee: Number(item.monthly_fee),
-        dueDate: item.due_date,
-        status:
-          item.status === "paid"
-            ? "Paid"
-            : item.status === "overdue"
-            ? "Overdue"
-            : "Due Today",
-      }));
+      const formatted: Student[] = stuData.map((item: any) => {
+        const joining = item.joining_date || item.due_date || todayStr;
+        const lastPaid = item.last_paid_date || (item.status === "paid" ? todayStr : null);
+        const { dueDateText, status } = calculateMonthlyDue(joining, lastPaid);
+
+        return {
+          id: item.id,
+          seatNo: item.seat_no,
+          name: item.name,
+          phone: item.phone,
+          shift: item.shift as Shift,
+          monthlyFee: Number(item.monthly_fee),
+          joiningDate: joining,
+          lastPaidDate: lastPaid,
+          dueDate: dueDateText,
+          status: status,
+        };
+      });
       setStudents(formatted);
     }
     setLoading(false);
@@ -231,8 +278,7 @@ function LibraryView() {
       phone: "",
       shift: "Morning",
       monthlyFee: "900",
-      dueDate: "29 Sep 2026",
-      status: "Due Today",
+      joiningDate: todayStr,
     });
     setFormError("");
     setShowModal(true);
@@ -246,8 +292,7 @@ function LibraryView() {
       phone: student.phone,
       shift: student.shift,
       monthlyFee: String(student.monthlyFee),
-      dueDate: student.dueDate,
-      status: student.status,
+      joiningDate: student.joiningDate || todayStr,
     });
     setFormError("");
     setShowModal(true);
@@ -264,16 +309,21 @@ function LibraryView() {
   }
 
   async function markPaid(id: string) {
+    const today = new Date().toISOString().split("T")[0];
+
     const { error } = await supabase
       .from("students")
-      .update({ status: "paid" })
+      .update({ 
+        status: "paid",
+        last_paid_date: today 
+      })
       .eq("id", id);
 
     if (!error) {
       setStudents((prev) =>
-        prev.map((s) => (s.id === id ? { ...s, status: "Paid" as const } : s))
+        prev.map((s) => (s.id === id ? { ...s, lastPaidDate: today, status: "Paid" as const } : s))
       );
-      showToast("Payment marked as received.");
+      showToast("Payment marked as received for this month!");
     }
   }
 
@@ -296,19 +346,17 @@ function LibraryView() {
       return;
     }
 
+    const { dueDateText, status } = calculateMonthlyDue(form.joiningDate, null);
+
     const payload: any = {
       name: form.name.trim(),
       phone: form.phone.replace(/\D/g, "").slice(-10),
       seat_no: seatNo,
       shift: form.shift,
       monthly_fee: fee,
-      due_date: form.dueDate,
-      status:
-        form.status === "Paid"
-          ? "paid"
-          : form.status === "Overdue"
-          ? "overdue"
-          : "due_today",
+      joining_date: form.joiningDate,
+      due_date: dueDateText,
+      status: status.toLowerCase().replace(" ", "_"),
       library_id: currentLib?.id,
     };
 
@@ -333,8 +381,9 @@ function LibraryView() {
                 phone: payload.phone,
                 shift: form.shift,
                 monthlyFee: fee,
-                dueDate: form.dueDate,
-                status: form.status,
+                joiningDate: form.joiningDate,
+                dueDate: dueDateText,
+                status: status,
               }
             : s
         )
@@ -362,8 +411,10 @@ function LibraryView() {
             phone: added.phone,
             shift: added.shift as Shift,
             monthlyFee: Number(added.monthly_fee),
-            dueDate: added.due_date,
-            status: form.status,
+            joiningDate: form.joiningDate,
+            lastPaidDate: null,
+            dueDate: dueDateText,
+            status: status,
           },
         ]);
         showToast(`${payload.name} ko seat ${seatNo} par jod diya.`);
@@ -373,7 +424,6 @@ function LibraryView() {
     setShowModal(false);
   }
 
-  // Jab tak auth verify ho raha ho
   if (isAuthorized === null) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-400 text-sm">
@@ -459,7 +509,7 @@ function LibraryView() {
             {currentLib?.name} Dashboard
           </h1>
           <p className="mt-1 text-sm text-slate-500">
-            Manage students, dues and seat allocations for your branch.
+            Manage students, monthly dues and seat allocations for your branch.
           </p>
         </div>
 
@@ -469,9 +519,9 @@ function LibraryView() {
             <p className="mt-3 text-3xl font-semibold tracking-tight">{students.length}</p>
           </article>
           <article className="rounded-2xl border border-orange-100 bg-gradient-to-br from-white to-orange-50 p-5 shadow-sm">
-            <p className="text-sm font-medium text-orange-700">Fees Due Today</p>
+            <p className="text-sm font-medium text-orange-700">Fees Due / Overdue</p>
             <p className="mt-3 text-3xl font-semibold tracking-tight text-orange-800">{formatINR(dueTodayAmount)}</p>
-            <p className="mt-2 text-sm text-orange-700/80">{dueToday.length} Students</p>
+            <p className="mt-2 text-sm text-orange-700/80">{dueToday.length + overdue.length} Students Pending</p>
           </article>
           <article className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-white to-emerald-50 p-5 shadow-sm sm:col-span-2 xl:col-span-1">
             <p className="text-sm font-medium text-emerald-700">Total Revenue This Month</p>
@@ -507,7 +557,7 @@ function LibraryView() {
           </div>
 
           <div className="overflow-x-auto">
-            <table className="min-w-[980px] w-full text-left text-sm">
+            <table className="min-w-[1050px] w-full text-left text-sm">
               <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
                 <tr>
                   <th className="px-5 py-3 font-medium">Seat No</th>
@@ -515,7 +565,9 @@ function LibraryView() {
                   <th className="px-5 py-3 font-medium">Phone Number</th>
                   <th className="px-5 py-3 font-medium">Shift</th>
                   <th className="px-5 py-3 font-medium">Monthly Fee</th>
-                  <th className="px-5 py-3 font-medium">Due Date</th>
+                  <th className="px-5 py-3 font-medium">Joining Date</th>
+                  <th className="px-5 py-3 font-medium">Last Paid On</th>
+                  <th className="px-5 py-3 font-medium">Current Due</th>
                   <th className="px-5 py-3 font-medium">Status</th>
                   <th className="px-5 py-3 font-medium text-center">Actions</th>
                 </tr>
@@ -523,11 +575,11 @@ function LibraryView() {
               <tbody className="divide-y divide-slate-100">
                 {loading ? (
                   <tr>
-                    <td colSpan={8} className="px-5 py-10 text-center text-sm text-slate-400">Loading data...</td>
+                    <td colSpan={10} className="px-5 py-10 text-center text-sm text-slate-400">Loading data...</td>
                   </tr>
                 ) : filtered.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-5 py-10 text-center text-sm text-slate-500">Is library me abhi koi student nahi hai.</td>
+                    <td colSpan={10} className="px-5 py-10 text-center text-sm text-slate-500">Is library me abhi koi student nahi hai.</td>
                   </tr>
                 ) : (
                   filtered.map((student) => (
@@ -545,7 +597,17 @@ function LibraryView() {
                         </span>
                       </td>
                       <td className="px-5 py-3 font-medium">{formatINR(student.monthlyFee)}</td>
-                      <td className="px-5 py-3 text-slate-600">{student.dueDate}</td>
+                      <td className="px-5 py-3 text-slate-600 text-xs">{formatDate(student.joiningDate)}</td>
+                      <td className="px-5 py-3 text-xs">
+                        {student.lastPaidDate ? (
+                          <span className="font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-md">
+                            {formatDate(student.lastPaidDate)}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 italic">Never / New</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-3 text-slate-700 font-medium">{student.dueDate}</td>
                       <td className="px-5 py-3">
                         <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusBadge(student.status)}`}>
                           {student.status}
@@ -555,6 +617,7 @@ function LibraryView() {
                         <div className="flex items-center justify-center gap-1.5">
                           <button
                             type="button"
+                            title="Send WhatsApp Reminder"
                             onClick={() => openWhatsApp(student)}
                             className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
                           >
@@ -564,22 +627,22 @@ function LibraryView() {
                             <button
                               type="button"
                               onClick={() => markPaid(student.id)}
-                              className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-slate-700"
+                              className="rounded-lg border border-emerald-300 bg-emerald-50 px-2 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
                             >
-                              Paid
+                              Collect Fee
                             </button>
                           )}
                           <button
                             type="button"
                             onClick={() => handleOpenEdit(student)}
-                            className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700"
+                            className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
                           >
                             Edit
                           </button>
                           <button
                             type="button"
                             onClick={() => handleDelete(student.id, student.name)}
-                            className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-600"
+                            className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
                           >
                             ✕
                           </button>
@@ -631,31 +694,23 @@ function LibraryView() {
                   <option>Evening</option>
                   <option>Full Day</option>
                 </select>
-                <select
-                  value={form.status}
-                  onChange={(e) => setForm({ ...form, status: e.target.value as Status })}
-                  className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
-                >
-                  <option>Due Today</option>
-                  <option>Overdue</option>
-                  <option>Paid</option>
-                </select>
-              </div>
-              <div className="grid grid-cols-2 gap-3">
                 <input
                   required
                   type="number"
-                  placeholder="Monthly Fee"
+                  placeholder="Monthly Fee (₹)"
                   value={form.monthlyFee}
                   onChange={(e) => setForm({ ...form, monthlyFee: e.target.value })}
                   className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
                 />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Joining Date (Monthly Due Cycle):</label>
                 <input
                   required
-                  placeholder="Due Date"
-                  value={form.dueDate}
-                  onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
-                  className="rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  type="date"
+                  value={form.joiningDate}
+                  onChange={(e) => setForm({ ...form, joiningDate: e.target.value })}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
                 />
               </div>
             </div>
@@ -671,7 +726,7 @@ function LibraryView() {
                 type="submit"
                 className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
               >
-                Save
+                Save Student
               </button>
             </div>
           </form>
