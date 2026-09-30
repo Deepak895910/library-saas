@@ -17,12 +17,22 @@ type Student = {
   phone: string;
   shift: Shift;
   monthlyFee: number;
-  joiningDate: string; // YYYY-MM-DD
-  lastPaidDate: string | null; // YYYY-MM-DD (Stores Valid Until / Next Due Date)
+  joiningDate: string;
+  lastPaidDate: string | null;
   lastPaymentMode?: string | null;
   dueDate: string;
   status: Status;
   pendingMonths: number;
+};
+
+type Inquiry = {
+  id: string;
+  name: string;
+  phone: string;
+  interested_shift: Shift;
+  notes: string;
+  status: "pending" | "admitted" | "closed";
+  created_at: string;
 };
 
 type PaymentRecord = {
@@ -43,6 +53,7 @@ type LibraryInfo = {
   plan_status: string;
   expiry_date: string;
   seats_config?: string;
+  logo_url?: string;
 };
 
 const SUPER_ADMIN_WHATSAPP = "919301530783";
@@ -109,7 +120,6 @@ function parseCustomSeats(input: string): string[] {
   return Array.from(new Set(result));
 }
 
-// Local Timezone Helper (YYYY-MM-DD)
 function getLocalDateString(d: Date = new Date()): string {
   const year = d.getFullYear();
   const month = String(d.getMonth() + 1).padStart(2, "0");
@@ -117,7 +127,6 @@ function getLocalDateString(d: Date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
-// Format 1 Professional PDF Voucher
 function downloadReceiptPDF(
   libName: string,
   ownerName: string,
@@ -127,12 +136,7 @@ function downloadReceiptPDF(
   months: number,
   mode: string
 ) {
-  const doc = new jsPDF({
-    orientation: "portrait",
-    unit: "mm",
-    format: "a5",
-  });
-
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a5" });
   const receiptNo = `LIB-${Date.now().toString().slice(-6)}`;
   const dateStr = new Date().toLocaleDateString("en-IN", {
     day: "numeric",
@@ -155,7 +159,7 @@ function downloadReceiptPDF(
   doc.setFont("helvetica", "bold");
   doc.setFontSize(16);
   doc.setTextColor(15, 23, 42);
-  doc.text(libName.toUpperCase(), 74, 22, { align: "center" });
+  doc.text((libName || "LIBRARY MANAGEMENT").toUpperCase(), 74, 22, { align: "center" });
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
@@ -175,7 +179,6 @@ function downloadReceiptPDF(
   doc.setTextColor(71, 85, 105);
   doc.text(`Receipt No: ${receiptNo}`, 14, 46);
   doc.text(`Date: ${dateStr}`, 14, 52);
-
   doc.text(`Status: PAID & VERIFIED`, 134, 46, { align: "right" });
   doc.text(`Payment Mode: ${mode}`, 134, 52, { align: "right" });
 
@@ -239,7 +242,6 @@ function downloadReceiptPDF(
   doc.save(`${student.name.replace(/\s+/g, "_")}_Fee_Receipt.pdf`);
 }
 
-// Persistent Status & Due Calculation (Fixed Next Due Logic)
 function calculateMonthlyDue(
   joiningDateStr: string,
   lastPaidDateStr: string | null,
@@ -253,7 +255,6 @@ function calculateMonthlyDue(
   today.setHours(0, 0, 0, 0);
   const options: Intl.DateTimeFormatOptions = { day: "numeric", month: "short", year: "numeric" };
 
-  // 1. Agar fees pehle jama ki hai (lastPaidDateStr stores Next Due/Valid Till)
   if (lastPaidDateStr) {
     const parts = lastPaidDateStr.split("-").map(Number);
     const validUntil = new Date(parts[0], parts[1] - 1, parts[2] || 1);
@@ -261,24 +262,20 @@ function calculateMonthlyDue(
 
     const dueDateText = validUntil.toLocaleDateString("en-IN", options);
 
-    // Agar date future me hai -> Hamesha PAID (No collect button)
     if (validUntil > today) {
       return { dueDateText, status: "Paid", pendingMonths: 0 };
     }
 
-    // Aaj expiry date hai
     if (validUntil.getTime() === today.getTime()) {
       return { dueDateText, status: "Due Today", pendingMonths: 1 };
     }
 
-    // Date nikal chuki hai -> Overdue
     const monthDiff =
       (today.getFullYear() - validUntil.getFullYear()) * 12 +
       (today.getMonth() - validUntil.getMonth());
     return { dueDateText, status: "Overdue", pendingMonths: Math.max(1, monthDiff) };
   }
 
-  // 2. Agar student abhi new hai
   const jParts = (joiningDateStr || getLocalDateString()).split("-").map(Number);
   const joinDate = new Date(jParts[0], jParts[1] - 1, jParts[2] || 1);
   joinDate.setHours(0, 0, 0, 0);
@@ -300,10 +297,12 @@ function LibraryView() {
   const searchParams = useSearchParams();
   const libId = searchParams.get("id");
 
+  const [activeTab, setActiveTab] = useState<"students" | "inquiries">("students");
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
   const [currentLib, setCurrentLib] = useState<LibraryInfo | null>(null);
   const [isLibraryActive, setIsLibraryActive] = useState<boolean | null>(null);
   const [students, setStudents] = useState<Student[]>([]);
+  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -311,6 +310,7 @@ function LibraryView() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [formError, setFormError] = useState("");
+  const [uploadingLogo, setUploadingLogo] = useState(false);
 
   const [allSeatNames, setAllSeatNames] = useState<string[]>([]);
   const [seatConfigInput, setSeatConfigInput] = useState("A1-A25, B1-B25");
@@ -324,6 +324,19 @@ function LibraryView() {
   const [historyStudent, setHistoryStudent] = useState<Student | null>(null);
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Inquiry States
+  const [showInquiryModal, setShowInquiryModal] = useState(false);
+  const [inquiryForm, setInquiryForm] = useState({
+    name: "",
+    phone: "",
+    shift: "Morning" as Shift,
+    notes: "",
+  });
+  const [showBroadcastModal, setShowBroadcastModal] = useState(false);
+  const [broadcastMessage, setBroadcastMessage] = useState(
+    "Namaste! Hamari library me special admission discount aur peaceful environment available hai. Aaj hi visit karein aur apni seat book karein!"
+  );
 
   const [paymentSuccessData, setPaymentSuccessData] = useState<{
     student: Student;
@@ -402,6 +415,7 @@ function LibraryView() {
 
     setIsLibraryActive(true);
 
+    // Load Students
     const { data: stuData } = await supabase
       .from("students")
       .select("*")
@@ -431,6 +445,18 @@ function LibraryView() {
       });
       setStudents(formatted);
     }
+
+    // Load Inquiries
+    const { data: inqData } = await supabase
+      .from("inquiries")
+      .select("*")
+      .eq("library_id", selected.id)
+      .order("created_at", { ascending: false });
+
+    if (inqData) {
+      setInquiries(inqData as Inquiry[]);
+    }
+
     setLoading(false);
   };
 
@@ -439,6 +465,49 @@ function LibraryView() {
       loadData();
     }
   }, [isAuthorized, libId]);
+
+  // LOGO UPLOAD FUNCTION (CLICKABLE LOGO)
+  async function handleLogoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file || !currentLib?.id) return;
+
+    try {
+      setUploadingLogo(true);
+      const fileExt = file.name.split(".").pop();
+      const fileName = `logo-${currentLib.id}-${Date.now()}.${fileExt}`;
+      const filePath = `${fileName}`;
+
+      const { error: uploadError } = await supabase.storage
+        .from("library-logos")
+        .upload(filePath, file, { upsert: true });
+
+      if (uploadError) {
+        throw uploadError;
+      }
+
+      const { data: publicUrlData } = supabase.storage
+        .from("library-logos")
+        .getPublicUrl(filePath);
+
+      const publicUrl = publicUrlData.publicUrl;
+
+      const { error: updateError } = await supabase
+        .from("libraries")
+        .update({ logo_url: publicUrl })
+        .eq("id", currentLib.id);
+
+      if (updateError) {
+        throw updateError;
+      }
+
+      setCurrentLib((prev) => (prev ? { ...prev, logo_url: publicUrl } : null));
+      showToast("Library logo successfully updated!");
+    } catch (err: any) {
+      alert("Logo upload failed: " + (err.message || "Unknown error"));
+    } finally {
+      setUploadingLogo(false);
+    }
+  }
 
   const activeStudents = useMemo(() => students.filter((s) => s.status !== "Left"), [students]);
   const leftStudents = useMemo(() => students.filter((s) => s.status === "Left"), [students]);
@@ -449,6 +518,7 @@ function LibraryView() {
     return Array.from(new Set(fixedStudents.map((s) => s.seatNo.toUpperCase())));
   }, [fixedStudents]);
 
+  // VACANT SEAT CALCULATION (Corrected spelling)
   const vacantSeatList = useMemo(() => {
     const bookedSet = new Set(
       activeStudents
@@ -514,7 +584,7 @@ function LibraryView() {
   }
 
   function reminderText(student: Student) {
-    const libName = currentLib?.name || "Library";
+    const libName = currentLib?.name || "LIBRARY MANAGEMENT";
     const owner = currentLib?.owner_name || "Owner";
     const totalAmount = student.monthlyFee * Math.max(1, student.pendingMonths);
     const monthsText = student.pendingMonths > 1 ? ` (${student.pendingMonths} Months Overdue)` : "";
@@ -525,6 +595,63 @@ function LibraryView() {
   function openWhatsApp(student: Student) {
     const url = `https://wa.me/91${student.phone}?text=${encodeURIComponent(reminderText(student))}`;
     window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  // Inquiry Operations
+  async function handleAddInquiry(e: React.FormEvent) {
+    e.preventDefault();
+    if (!currentLib?.id) return;
+
+    const payload = {
+      library_id: currentLib.id,
+      name: inquiryForm.name.trim(),
+      phone: inquiryForm.phone.replace(/\D/g, "").slice(-10),
+      interested_shift: inquiryForm.shift,
+      notes: inquiryForm.notes.trim(),
+      status: "pending",
+    };
+
+    const { data, error } = await supabase.from("inquiries").insert([payload]).select();
+    if (!error && data) {
+      setInquiries((prev) => [data[0] as Inquiry, ...prev]);
+      setShowInquiryModal(false);
+      setInquiryForm({ name: "", phone: "", shift: "Morning", notes: "" });
+      showToast("New Inquiry entry saved!");
+    } else {
+      alert("Error saving inquiry: " + (error?.message || "Unknown"));
+    }
+  }
+
+  async function handleDeleteInquiry(id: string) {
+    if (!confirm("Are you sure you want to delete this inquiry?")) return;
+    const { error } = await supabase.from("inquiries").delete().eq("id", id);
+    if (!error) {
+      setInquiries((prev) => prev.filter((i) => i.id !== id));
+      showToast("Inquiry deleted.");
+    }
+  }
+
+  function handleConvertInquiryToStudent(inq: Inquiry) {
+    handleOpenAdd();
+    setForm({
+      seatNo: "",
+      name: inq.name,
+      phone: inq.phone,
+      shift: inq.interested_shift,
+      monthlyFee: "900",
+      joiningDate: todayStr,
+    });
+    setActiveTab("students");
+  }
+
+  function handleBulkWhatsAppInquiries() {
+    if (inquiries.length === 0) {
+      alert("Koi inquiry data available nahi hai!");
+      return;
+    }
+    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(broadcastMessage)}`;
+    window.open(url, "_blank");
+    setShowBroadcastModal(false);
   }
 
   function handleExportCSV() {
@@ -635,7 +762,6 @@ function LibraryView() {
     setLoadingHistory(false);
   }
 
-  // Collect Fee: Extends Validity to Next Month Cycle Permanently
   async function submitCollectFee(e: React.FormEvent) {
     e.preventDefault();
     if (!collectStudent || !currentLib?.id) return;
@@ -643,7 +769,6 @@ function LibraryView() {
     const today = new Date();
     const todayStr = getLocalDateString(today);
 
-    // 1 Month fee collect hone par next month cycle calculate karein
     const paidUntil = new Date(today);
     paidUntil.setMonth(paidUntil.getMonth() + collectMonths);
     const paidUntilStr = getLocalDateString(paidUntil);
@@ -653,7 +778,6 @@ function LibraryView() {
     const chosenMode = paymentMode;
     const countMonths = collectMonths;
 
-    // 1. Update Student Table in Supabase
     const { error: studentError } = await supabase
       .from("students")
       .update({
@@ -668,7 +792,6 @@ function LibraryView() {
       return;
     }
 
-    // 2. Permanent Ledger Insert in Supabase
     try {
       await supabase.from("fee_payments").insert([
         {
@@ -687,7 +810,6 @@ function LibraryView() {
       console.warn("Ledger insert error:", err);
     }
 
-    // 3. UI Update (Status immediately Paid with 0 pending)
     setStudents((prev) =>
       prev.map((s) =>
         s.id === targetStudent.id
@@ -705,10 +827,9 @@ function LibraryView() {
     setCollectStudent(null);
     showToast(`Fees successfully collect ho gayi (${chosenMode})!`);
 
-    // 4. Download Format 1 PDF Receipt
     try {
       downloadReceiptPDF(
-        currentLib.name || "Library",
+        currentLib.name || "LIBRARY MANAGEMENT",
         currentLib.owner_name || "Manager",
         currentLib.phone || "9301530783",
         targetStudent,
@@ -720,9 +841,8 @@ function LibraryView() {
       console.error("PDF generation error:", pdfErr);
     }
 
-    // 5. WhatsApp Message
     const seatInfo = targetStudent.shift === "Random" ? "Floating Seat" : `Seat ${targetStudent.seatNo}`;
-    const waText = `Namaste ${targetStudent.name},\n\nWe have received your library fee payment of ${formatINR(totalCollected)} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}).\n\nYour official PDF receipt is attached.\n\nThank you,\n${currentLib.name || "Library"}`;
+    const waText = `Namaste ${targetStudent.name},\n\nWe have received your library fee payment of ${formatINR(totalCollected)} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}).\n\nYour official PDF receipt is attached.\n\nThank you,\n${currentLib.name || "LIBRARY MANAGEMENT"}`;
     const waUrl = `https://wa.me/91${targetStudent.phone}?text=${encodeURIComponent(waText)}`;
 
     setPaymentSuccessData({
@@ -911,17 +1031,48 @@ function LibraryView() {
 
   return (
     <div className="min-h-full bg-slate-50 text-slate-900">
-      <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/90 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+      <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+          
+          {/* TAP/CLICKABLE LOGO (Direct Upload) */}
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-blue-600 text-sm font-bold text-white shadow-sm shadow-blue-600/30">
-              {currentLib?.name ? currentLib.name.slice(0, 3).toUpperCase() : "LIB"}
-            </div>
+            <label 
+              title="Click logo to change"
+              className="relative cursor-pointer group flex items-center justify-center"
+            >
+              <img
+                src={currentLib?.logo_url || "/logo.png"}
+                alt="Library Logo"
+                onError={(e) => {
+                  (e.target as any).src = "/logo.png";
+                }}
+                className="h-12 w-12 rounded-2xl object-cover border border-slate-200 shadow-sm transition duration-200 group-hover:scale-105 group-hover:ring-2 group-hover:ring-blue-500"
+              />
+              <div className="absolute inset-0 bg-black/40 rounded-2xl opacity-0 group-hover:opacity-100 flex items-center justify-center transition text-white text-xs font-bold">
+                ✏️
+              </div>
+              <input
+                type="file"
+                accept="image/*"
+                onChange={handleLogoUpload}
+                disabled={uploadingLogo}
+                className="hidden"
+              />
+            </label>
+
             <div>
-              <p className="text-lg font-semibold tracking-tight text-slate-900">
-                {currentLib?.name || "Library"}
+              <div className="flex items-center gap-2">
+                <p className="text-lg font-bold tracking-tight text-slate-900">
+                  {currentLib?.name || "LIBRARY MANAGEMENT"}
+                </p>
+                <span className="text-[10px] font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                  Pro App
+                </span>
+              </div>
+              <p className="text-xs text-slate-500">
+                Branch Head: {currentLib?.owner_name || "Manager"}
+                {uploadingLogo && <span className="ml-2 text-blue-600 font-semibold animate-pulse">(Updating Logo...)</span>}
               </p>
-              <p className="text-sm text-slate-500">Owner · {currentLib?.owner_name || "Manager"}</p>
             </div>
           </div>
 
@@ -940,270 +1091,498 @@ function LibraryView() {
             >
               Logout ↩
             </button>
-            <button
-              type="button"
-              onClick={() => handleOpenAdd("")}
-              className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-600/25 transition hover:bg-blue-700"
-            >
-              <span className="text-lg leading-none">+</span>
-              Add Student
-            </button>
+            {activeTab === "students" ? (
+              <button
+                type="button"
+                onClick={() => handleOpenAdd("")}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-600/25 transition hover:bg-blue-700"
+              >
+                <span className="text-lg leading-none">+</span>
+                Add Student
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowInquiryModal(true)}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-indigo-600/25 transition hover:bg-indigo-700"
+              >
+                <span className="text-lg leading-none">+</span>
+                New Inquiry
+              </button>
+            )}
           </div>
         </div>
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight text-slate-900">
-              {currentLib?.name} Dashboard
-            </h1>
-            <p className="mt-1 text-sm text-slate-500">
-              Live seat management, multi-month fee tracking and branch overview.
-            </p>
+        {/* Navigation Tabs (Students vs Inquiries) */}
+        <div className="flex items-center justify-between border-b border-slate-200 pb-4 mb-6">
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => setActiveTab("students")}
+              className={`px-4 py-2 rounded-xl text-sm font-bold transition flex items-center gap-2 ${
+                activeTab === "students"
+                  ? "bg-blue-600 text-white shadow-sm shadow-blue-600/20"
+                  : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+              }`}
+            >
+              <span>🎓 Registered Students</span>
+              <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">{activeStudents.length}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("inquiries")}
+              className={`px-4 py-2 rounded-xl text-sm font-bold transition flex items-center gap-2 ${
+                activeTab === "inquiries"
+                  ? "bg-indigo-600 text-white shadow-sm shadow-indigo-600/20"
+                  : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+              }`}
+            >
+              <span>📋 New Inquiries / Leads</span>
+              <span className="text-xs bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-bold">
+                {inquiries.length}
+              </span>
+            </button>
           </div>
-          <a
-            href={`https://wa.me/${SUPER_ADMIN_WHATSAPP}?text=${encodeURIComponent(
-              `Namaste Support Team, mujhe ${currentLib?.name} ke software ke liye help chahiye.`
-            )}`}
-            target="_blank"
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-1.5 rounded-xl hover:bg-emerald-100 self-start sm:self-auto"
-          >
-            <span>💬 Need Help? Contact Support</span>
-          </a>
+
+          {activeTab === "inquiries" && (
+            <button
+              type="button"
+              onClick={() => setShowBroadcastModal(true)}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-sm flex items-center gap-1.5"
+            >
+              <span>📢 Bulk WhatsApp Message</span>
+            </button>
+          )}
         </div>
 
-        {/* 4 Cards Overview with Seating Breakdown */}
-        <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-            <p className="text-sm font-medium text-slate-500">Total Enrolled</p>
-            <p className="mt-3 text-3xl font-semibold tracking-tight">{activeStudents.length}</p>
-            <p className="mt-2 text-xs text-slate-500">
-              <span className="font-semibold text-slate-700">{bookedSeatNumbers.length}</span> Fixed ·{" "}
-              <span className="font-semibold text-rose-700">{randomStudentsCount}</span> Floating/Random
-            </p>
-          </article>
+        {/* TAB 1: REGISTERED STUDENTS VIEW */}
+        {activeTab === "students" && (
+          <>
+            <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+                <p className="text-sm font-medium text-slate-500">Total Enrolled</p>
+                <p className="mt-3 text-3xl font-semibold tracking-tight">{activeStudents.length}</p>
+                <p className="mt-2 text-xs text-slate-500">
+                  <span className="font-semibold text-slate-700">{bookedSeatNumbers.length}</span> Fixed ·{" "}
+                  <span className="font-semibold text-rose-700">{randomStudentsCount}</span> Floating/Random
+                </p>
+              </article>
 
-          {/* Vacant Seats Card */}
-          <article
-            onClick={() => setShowVacantModal(true)}
-            className="rounded-2xl border border-blue-200 bg-gradient-to-br from-white to-blue-50 p-5 shadow-sm cursor-pointer hover:border-blue-400 transition"
-          >
-            <div className="flex justify-between items-start">
-              <p className="text-sm font-medium text-blue-700">Vacant / Free Seats</p>
-              <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-semibold">
-                Manage
-              </span>
-            </div>
-            <p className="mt-3 text-3xl font-semibold tracking-tight text-blue-800">
-              {vacantSeatList.length}
-            </p>
-            <p className="mt-2 text-xs text-blue-600/80">
-              Out of {allSeatNames.length} fixed seats (Cloud synced)
-            </p>
-          </article>
+              {/* VACANT SEATS CARD (Corrected Spelling) */}
+              <article
+                onClick={() => setShowVacantModal(true)}
+                className="rounded-2xl border border-blue-200 bg-gradient-to-br from-white to-blue-50 p-5 shadow-sm cursor-pointer hover:border-blue-400 transition"
+              >
+                <div className="flex justify-between items-start">
+                  <p className="text-sm font-medium text-blue-700">Vacant / Free Seats</p>
+                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-semibold">
+                    Manage
+                  </span>
+                </div>
+                <p className="mt-3 text-3xl font-semibold tracking-tight text-blue-800">
+                  {vacantSeatList.length}
+                </p>
+                <p className="mt-2 text-xs text-blue-600/80">Out of {allSeatNames.length} fixed seats (Cloud synced)</p>
+              </article>
 
-          {/* Pending Fees Card */}
-          <article className="rounded-2xl border border-orange-100 bg-gradient-to-br from-white to-orange-50 p-5 shadow-sm">
-            <p className="text-sm font-medium text-orange-700">Fees Due / Overdue</p>
-            <p className="mt-3 text-3xl font-semibold tracking-tight text-orange-800">
-              {formatINR(dueTotalAmount)}
-            </p>
-            <p className="mt-2 text-xs text-orange-700/80">
-              {dueToday.length + overdue.length} Students Pending
-            </p>
-          </article>
+              <article className="rounded-2xl border border-orange-100 bg-gradient-to-br from-white to-orange-50 p-5 shadow-sm">
+                <p className="text-sm font-medium text-orange-700">Fees Due / Overdue</p>
+                <p className="mt-3 text-3xl font-semibold tracking-tight text-orange-800">
+                  {formatINR(dueTotalAmount)}
+                </p>
+                <p className="mt-2 text-xs text-orange-700/80">{dueToday.length + overdue.length} Students Pending</p>
+              </article>
 
-          {/* Monthly Revenue Card */}
-          <article className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-white to-emerald-50 p-5 shadow-sm">
-            <p className="text-sm font-medium text-emerald-700">Total Revenue This Month</p>
-            <p className="mt-3 text-3xl font-semibold tracking-tight text-emerald-800">
-              {formatINR(monthRevenue)}
-            </p>
-            <p className="mt-2 text-xs text-emerald-700/80">From {paid.length} paid seats</p>
-          </article>
-        </section>
+              <article className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-white to-emerald-50 p-5 shadow-sm">
+                <p className="text-sm font-medium text-emerald-700">Total Revenue This Month</p>
+                <p className="mt-3 text-3xl font-semibold tracking-tight text-emerald-800">
+                  {formatINR(monthRevenue)}
+                </p>
+                <p className="mt-2 text-xs text-emerald-700/80">{paid.length} Paid Students</p>
+              </article>
+            </section>
 
-        <section className="mt-6 rounded-2xl border border-slate-200 bg-white shadow-sm">
-          <div className="flex flex-col gap-4 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-            <div className="flex flex-wrap gap-2">
-              {filters.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setFilter(item.id)}
-                  className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition ${
-                    filter === item.id
-                      ? "bg-slate-900 text-white"
-                      : "bg-slate-100 text-slate-600 hover:bg-slate-200"
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name, seat, or phone"
-              className="w-full sm:max-w-xs rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none ring-blue-500/30 focus:bg-white focus:ring-2"
-            />
-          </div>
+            <section className="mt-6 rounded-2xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex flex-col gap-4 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                <div className="flex flex-wrap gap-2">
+                  {filters.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setFilter(item.id)}
+                      className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition ${
+                        filter === item.id
+                          ? "bg-slate-900 text-white"
+                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search name, seat, or phone"
+                  className="w-full sm:max-w-xs rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none ring-blue-500/30 focus:bg-white focus:ring-2"
+                />
+              </div>
 
-          <div className="overflow-x-auto">
-            <table className="min-w-[1200px] w-full text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                <tr>
-                  <th className="px-5 py-3 font-medium">Seat No</th>
-                  <th className="px-5 py-3 font-medium">Student Name</th>
-                  <th className="px-5 py-3 font-medium">Phone Number</th>
-                  <th className="px-5 py-3 font-medium">Shift</th>
-                  <th className="px-5 py-3 font-medium">Monthly Fee</th>
-                  <th className="px-5 py-3 font-medium">Joining Date</th>
-                  <th className="px-5 py-3 font-medium">Valid Until (Next Due)</th>
-                  <th className="px-5 py-3 font-medium">Pending Dues</th>
-                  <th className="px-5 py-3 font-medium">Status</th>
-                  <th className="px-5 py-3 font-medium text-center">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100">
-                {loading ? (
-                  <tr>
-                    <td colSpan={10} className="px-5 py-10 text-center text-sm text-slate-400">Loading data...</td>
-                  </tr>
-                ) : filtered.length === 0 ? (
-                  <tr>
-                    <td colSpan={10} className="px-5 py-10 text-center text-sm text-slate-500">Koi student nahi mila.</td>
-                  </tr>
-                ) : (
-                  filtered.map((student) => (
-                    <tr key={student.id} className="hover:bg-slate-50/80 transition">
-                      <td className="px-5 py-3">
-                        <span
-                          className={`inline-flex min-w-[3.25rem] items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold ${
-                            student.status === "Left"
-                              ? "bg-slate-200 text-slate-600"
-                              : student.shift === "Random"
-                                ? "bg-rose-100 text-rose-800 border border-rose-200"
-                                : "bg-slate-900 text-white"
-                          }`}
-                        >
-                          {student.seatNo}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3 font-medium text-slate-900">{student.name}</td>
-                      <td className="px-5 py-3 tabular-nums text-slate-600">{student.phone}</td>
-                      <td className="px-5 py-3">
-                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${shiftBadge(student.shift)}`}>
-                          {student.shift}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3 font-medium">{formatINR(student.monthlyFee)}</td>
-                      <td className="px-5 py-3 text-slate-600 text-xs">{formatDate(student.joiningDate)}</td>
-                      <td className="px-5 py-3 text-xs">
-                        {student.lastPaidDate ? (
-                          <div>
-                            <span className="font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md inline-block">
-                              {formatDate(student.lastPaidDate)}
+              <div className="overflow-x-auto">
+                <table className="min-w-[1240px] w-full text-left text-sm">
+                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                    <tr>
+                      <th className="px-5 py-3 font-medium">Seat No</th>
+                      <th className="px-5 py-3 font-medium">Student Name</th>
+                      <th className="px-5 py-3 font-medium">Phone & Contact</th>
+                      <th className="px-5 py-3 font-medium">Shift</th>
+                      <th className="px-5 py-3 font-medium">Monthly Fee</th>
+                      <th className="px-5 py-3 font-medium">Joining Date</th>
+                      <th className="px-5 py-3 font-medium">Valid Until (Next Due)</th>
+                      <th className="px-5 py-3 font-medium">Pending Dues</th>
+                      <th className="px-5 py-3 font-medium">Status</th>
+                      <th className="px-5 py-3 font-medium text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {loading ? (
+                      <tr>
+                        <td colSpan={10} className="px-5 py-10 text-center text-sm text-slate-400">Loading data...</td>
+                      </tr>
+                    ) : filtered.length === 0 ? (
+                      <tr>
+                        <td colSpan={10} className="px-5 py-10 text-center text-sm text-slate-500">Koi student nahi mila.</td>
+                      </tr>
+                    ) : (
+                      filtered.map((student) => (
+                        <tr key={student.id} className="hover:bg-slate-50/80 transition">
+                          <td className="px-5 py-3">
+                            <span
+                              className={`inline-flex min-w-[3.25rem] items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold ${
+                                student.status === "Left"
+                                  ? "bg-slate-200 text-slate-600"
+                                  : student.shift === "Random"
+                                    ? "bg-rose-100 text-rose-800 border border-rose-200"
+                                    : "bg-slate-900 text-white"
+                              }`}
+                            >
+                              {student.seatNo}
                             </span>
-                            <span className="block text-[10px] text-slate-400 mt-0.5">
-                              Mode: {student.lastPaymentMode || "Cash"}
+                          </td>
+                          <td className="px-5 py-3 font-medium text-slate-900">{student.name}</td>
+                          <td className="px-5 py-3 tabular-nums text-slate-600">
+                            <div className="flex items-center gap-2">
+                              <span>{student.phone}</span>
+                              <a
+                                href={`tel:${student.phone}`}
+                                title="Call Student"
+                                className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 text-xs font-bold"
+                              >
+                                📞
+                              </a>
+                            </div>
+                          </td>
+                          <td className="px-5 py-3">
+                            <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${shiftBadge(student.shift)}`}>
+                              {student.shift}
                             </span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-400 italic">Never / New</span>
-                        )}
-                      </td>
-                      <td className="px-5 py-3">
-                        {student.status === "Left" ? (
-                          <span className="text-slate-400 text-xs">Vacated</span>
-                        ) : student.status === "Paid" ? (
-                          <span className="text-emerald-600 text-xs font-semibold">All Clear</span>
-                        ) : (
-                          <div>
-                            <span className="text-sm font-semibold text-rose-700">
-                              {formatINR(student.monthlyFee * Math.max(1, student.pendingMonths))}
-                            </span>
-                            {student.pendingMonths > 1 && (
-                              <span className="block text-[11px] text-rose-600 font-medium">
-                                ({student.pendingMonths} Months Overdue)
-                              </span>
+                          </td>
+                          <td className="px-5 py-3 font-medium">{formatINR(student.monthlyFee)}</td>
+                          <td className="px-5 py-3 text-slate-600 text-xs">{formatDate(student.joiningDate)}</td>
+                          <td className="px-5 py-3 text-xs">
+                            {student.lastPaidDate ? (
+                              <div>
+                                <span className="font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md inline-block">
+                                  {formatDate(student.lastPaidDate)}
+                                </span>
+                                <span className="block text-[10px] text-slate-400 mt-0.5">
+                                  Mode: {student.lastPaymentMode || "Cash"}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 italic">Never / New</span>
                             )}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-5 py-3">
-                        <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusBadge(student.status)}`}>
-                          {student.status}
-                        </span>
-                      </td>
-                      <td className="px-5 py-3 text-center">
-                        <div className="flex items-center justify-center gap-1.5">
-                          {student.status !== "Left" && (
-                            <>
+                          </td>
+                          <td className="px-5 py-3">
+                            {student.status === "Left" ? (
+                              <span className="text-slate-400 text-xs">Vacated</span>
+                            ) : student.status === "Paid" ? (
+                              <span className="text-emerald-600 text-xs font-semibold">All Clear</span>
+                            ) : (
+                              <div>
+                                <span className="text-sm font-semibold text-rose-700">
+                                  {formatINR(student.monthlyFee * Math.max(1, student.pendingMonths))}
+                                </span>
+                                {student.pendingMonths > 1 && (
+                                  <span className="block text-[11px] text-rose-600 font-medium">
+                                    ({student.pendingMonths} Months Overdue)
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-5 py-3">
+                            <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusBadge(student.status)}`}>
+                              {student.status}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              {student.status !== "Left" && (
+                                <>
+                                  <button
+                                    type="button"
+                                    title="Send WhatsApp Reminder"
+                                    onClick={() => openWhatsApp(student)}
+                                    className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                                  >
+                                    WA
+                                  </button>
+                                  {student.status !== "Paid" && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenCollect(student)}
+                                      className="rounded-lg border border-emerald-300 bg-emerald-50 px-2 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                                    >
+                                      Collect Fee
+                                    </button>
+                                  )}
+                                </>
+                              )}
                               <button
                                 type="button"
-                                title="Send WhatsApp Reminder"
-                                onClick={() => openWhatsApp(student)}
-                                className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
+                                title="View Payment History"
+                                onClick={() => handleOpenHistory(student)}
+                                className="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                               >
-                                WA
+                                📜 History
                               </button>
-                              {student.status !== "Paid" && (
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEdit(student)}
+                                className="rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                              >
+                                Edit
+                              </button>
+                              {student.status !== "Left" ? (
                                 <button
                                   type="button"
-                                  onClick={() => handleOpenCollect(student)}
-                                  className="rounded-lg border border-emerald-300 bg-emerald-50 px-2 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
+                                  title="Mark Left / Vacate Seat"
+                                  onClick={() => handleMarkLeft(student)}
+                                  className="rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
                                 >
-                                  Collect Fee
+                                  Vacate
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  title="Delete Permanently"
+                                  onClick={() => handleDelete(student.id, student.name)}
+                                  className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
+                                >
+                                  ✕
                                 </button>
                               )}
-                            </>
-                          )}
-                          <button
-                            type="button"
-                            title="View Payment History"
-                            onClick={() => handleOpenHistory(student)}
-                            className="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                          >
-                            📜 History
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleOpenEdit(student)}
-                            className="rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
-                          >
-                            Edit
-                          </button>
-                          {student.status !== "Left" ? (
-                            <button
-                              type="button"
-                              title="Mark Left / Vacate Seat"
-                              onClick={() => handleMarkLeft(student)}
-                              className="rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          </>
+        )}
+
+        {/* TAB 2: INQUIRIES VIEW */}
+        {activeTab === "inquiries" && (
+          <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+              <div>
+                <h3 className="font-bold text-slate-900">New Admission Leads & Inquiries</h3>
+                <p className="text-xs text-slate-500">Call, message or convert demo candidates into registered students.</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowInquiryModal(true)}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm"
+              >
+                + Add Inquiry
+              </button>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+                  <tr>
+                    <th className="px-5 py-3 font-medium">Candidate Name</th>
+                    <th className="px-5 py-3 font-medium">Phone & Contact</th>
+                    <th className="px-5 py-3 font-medium">Interested Shift</th>
+                    <th className="px-5 py-3 font-medium">Notes / Requirement</th>
+                    <th className="px-5 py-3 font-medium">Inquiry Date</th>
+                    <th className="px-5 py-3 font-medium text-center">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {inquiries.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="px-5 py-12 text-center text-slate-400 text-sm">
+                        Abhi tak koi inquiry entry nahi hai. "Add Inquiry" button se naye students jod sakte hain.
+                      </td>
+                    </tr>
+                  ) : (
+                    inquiries.map((inq) => (
+                      <tr key={inq.id} className="hover:bg-slate-50/70 transition">
+                        <td className="px-5 py-3 font-bold text-slate-900">{inq.name}</td>
+                        <td className="px-5 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-slate-700">{inq.phone}</span>
+                            <a
+                              href={`tel:${inq.phone}`}
+                              title="Direct Call"
+                              className="w-7 h-7 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-md flex items-center justify-center text-xs font-bold"
                             >
-                              Vacate
-                            </button>
-                          ) : (
+                              📞
+                            </a>
+                            <a
+                              href={`https://wa.me/91${inq.phone}?text=${encodeURIComponent(
+                                `Namaste ${inq.name}, thank you for contacting ${currentLib?.name || "our library"}. Would you like to schedule your trial slot today?`
+                              )}`}
+                              target="_blank"
+                              title="WhatsApp Chat"
+                              className="w-7 h-7 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-md flex items-center justify-center text-xs font-bold"
+                            >
+                              WA
+                            </a>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3">
+                          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${shiftBadge(inq.interested_shift)}`}>
+                            {inq.interested_shift}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3 text-slate-600 text-xs">{inq.notes || "General Inquiry"}</td>
+                        <td className="px-5 py-3 text-slate-500 text-xs">{formatDate(inq.created_at)}</td>
+                        <td className="px-5 py-3 text-center">
+                          <div className="flex items-center justify-center gap-2">
                             <button
                               type="button"
-                              title="Delete Permanently"
-                              onClick={() => handleDelete(student.id, student.name)}
-                              className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
+                              onClick={() => handleConvertInquiryToStudent(inq)}
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs px-2.5 py-1 rounded-md shadow-xs"
+                            >
+                              Confirm Admission 🎓
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteInquiry(inq.id)}
+                              className="text-red-500 hover:text-red-700 text-xs font-bold px-2 py-1"
                             >
                               ✕
                             </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </section>
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
       </main>
+
+      {/* MODAL: ADD INQUIRY */}
+      {showInquiryModal && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-4">
+          <form onSubmit={handleAddInquiry} className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl space-y-3">
+            <h3 className="text-base font-bold text-slate-900">Add New Admission Lead</h3>
+            <input
+              required
+              placeholder="Candidate Name"
+              value={inquiryForm.name}
+              onChange={(e) => setInquiryForm({ ...inquiryForm, name: e.target.value })}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            />
+            <input
+              required
+              placeholder="Phone (10 digits)"
+              value={inquiryForm.phone}
+              onChange={(e) => setInquiryForm({ ...inquiryForm, phone: e.target.value })}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+            />
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block">Interested Shift:</label>
+              <select
+                value={inquiryForm.shift}
+                onChange={(e) => setInquiryForm({ ...inquiryForm, shift: e.target.value as Shift })}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              >
+                <option value="Morning">Morning</option>
+                <option value="Evening">Evening</option>
+                <option value="Full Day">Full Day</option>
+                <option value="Random">Random / Flexible</option>
+              </select>
+            </div>
+            <textarea
+              placeholder="Notes (e.g. Demanded Seat 12, Looking for demo slot)"
+              value={inquiryForm.notes}
+              onChange={(e) => setInquiryForm({ ...inquiryForm, notes: e.target.value })}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm h-20"
+            />
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowInquiryModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-xl"
+              >
+                Save Inquiry
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* MODAL: BULK WHATSAPP BROADCAST */}
+      {showBroadcastModal && (
+        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl space-y-4">
+            <h3 className="text-base font-bold text-slate-900">Broadcast WhatsApp Message</h3>
+            <p className="text-xs text-slate-500">
+              Yeh message aapke sabhi inquiries ({inquiries.length} candidates) ke liye WhatsApp compose karega.
+            </p>
+            <textarea
+              value={broadcastMessage}
+              onChange={(e) => setBroadcastMessage(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 p-3 text-xs h-28"
+            />
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowBroadcastModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleBulkWhatsAppInquiries}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center gap-1.5"
+              >
+                <span>🚀 Send Broadcast</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL 1: ADD / EDIT STUDENT */}
       {showModal && (
@@ -1301,7 +1680,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL 2: MULTI-MONTH FEE COLLECTION WITH PAYMENT MODE */}
+      {/* MODAL 2: MULTI-MONTH FEE COLLECTION */}
       {collectStudent && (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-4">
           <form onSubmit={submitCollectFee} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
@@ -1312,9 +1691,7 @@ function LibraryView() {
 
             <div className="mt-4 space-y-3.5">
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5">
-                  Select Months to Collect:
-                </label>
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Select Months to Collect:</label>
                 <select
                   value={collectMonths}
                   onChange={(e) => setCollectMonths(Number(e.target.value))}
@@ -1330,9 +1707,7 @@ function LibraryView() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5">
-                  Payment Mode:
-                </label>
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Payment Mode:</label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
@@ -1386,7 +1761,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL 3: VACANT SEATS OVERVIEW & RANGE SETUP */}
+      {/* MODAL 3: VACANT SEATS OVERVIEW (Corrected Spelling) */}
       {showVacantModal && (
         <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-4">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
@@ -1493,7 +1868,7 @@ function LibraryView() {
               <div>
                 <h3 className="text-lg font-bold text-slate-900">Payment History</h3>
                 <p className="text-xs text-slate-500">
-                  Student: <strong className="text-slate-800">{historyStudent.name}</strong> ({historyStudent.shift === "Random" ? "Floating Seat" : `Seat ${historyStudent.seatNo}`})[cite: 1, 6]
+                  Student: <strong className="text-slate-800">{historyStudent.name}</strong> ({historyStudent.shift === "Random" ? "Floating Seat" : `Seat ${historyStudent.seatNo}`})
                 </p>
               </div>
               <button onClick={() => setHistoryStudent(null)} className="text-slate-400 hover:text-slate-600">✕</button>
@@ -1544,7 +1919,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL 5: PAYMENT SUCCESS & RECEIPT POPUP SAFETY DIALOG */}
+      {/* MODAL 5: PAYMENT SUCCESS & RECEIPT POPUP */}
       {paymentSuccessData && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/60 p-4">
           <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl text-center space-y-4">
@@ -1571,7 +1946,7 @@ function LibraryView() {
                 type="button"
                 onClick={() => {
                   downloadReceiptPDF(
-                    currentLib?.name || "Library",
+                    currentLib?.name || "LIBRARY MANAGEMENT",
                     currentLib?.owner_name || "Manager",
                     currentLib?.phone || "9301530783",
                     paymentSuccessData.student,
