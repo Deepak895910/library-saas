@@ -18,7 +18,7 @@ type Student = {
   shift: Shift;
   monthlyFee: number;
   joiningDate: string; // YYYY-MM-DD
-  lastPaidDate: string | null; // YYYY-MM-DD
+  lastPaidDate: string | null; // YYYY-MM-DD (Stores Valid Until / Next Due Date)
   lastPaymentMode?: string | null;
   dueDate: string;
   status: Status;
@@ -109,6 +109,15 @@ function parseCustomSeats(input: string): string[] {
   return Array.from(new Set(result));
 }
 
+// Local Timezone Helper (YYYY-MM-DD)
+function getLocalDateString(d: Date = new Date()): string {
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+// Format 1 Professional PDF Voucher
 function downloadReceiptPDF(
   libName: string,
   ownerName: string,
@@ -230,6 +239,7 @@ function downloadReceiptPDF(
   doc.save(`${student.name.replace(/\s+/g, "_")}_Fee_Receipt.pdf`);
 }
 
+// Persistent Status & Due Calculation (Fixed Next Due Logic)
 function calculateMonthlyDue(
   joiningDateStr: string,
   lastPaidDateStr: string | null,
@@ -241,54 +251,48 @@ function calculateMonthlyDue(
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-
-  const joinDate = joiningDateStr ? new Date(joiningDateStr) : new Date();
-  const dueDay = isNaN(joinDate.getDate()) ? 1 : joinDate.getDate();
-
-  const currentMonthDue = new Date(today.getFullYear(), today.getMonth(), dueDay);
-  currentMonthDue.setHours(0, 0, 0, 0);
-
   const options: Intl.DateTimeFormatOptions = { day: "numeric", month: "short", year: "numeric" };
-  const dueDateText = currentMonthDue.toLocaleDateString("en-IN", options);
 
-  let baselineDate = joinDate;
+  // 1. Agar fees pehle jama ki hai (lastPaidDateStr stores Next Due/Valid Till)
   if (lastPaidDateStr) {
-    const lastPaid = new Date(lastPaidDateStr);
-    if (!isNaN(lastPaid.getTime())) {
-      baselineDate = lastPaid;
+    const parts = lastPaidDateStr.split("-").map(Number);
+    const validUntil = new Date(parts[0], parts[1] - 1, parts[2] || 1);
+    validUntil.setHours(0, 0, 0, 0);
+
+    const dueDateText = validUntil.toLocaleDateString("en-IN", options);
+
+    // Agar date future me hai -> Hamesha PAID (No collect button)
+    if (validUntil > today) {
+      return { dueDateText, status: "Paid", pendingMonths: 0 };
     }
+
+    // Aaj expiry date hai
+    if (validUntil.getTime() === today.getTime()) {
+      return { dueDateText, status: "Due Today", pendingMonths: 1 };
+    }
+
+    // Date nikal chuki hai -> Overdue
+    const monthDiff =
+      (today.getFullYear() - validUntil.getFullYear()) * 12 +
+      (today.getMonth() - validUntil.getMonth());
+    return { dueDateText, status: "Overdue", pendingMonths: Math.max(1, monthDiff) };
+  }
+
+  // 2. Agar student abhi new hai
+  const jParts = (joiningDateStr || getLocalDateString()).split("-").map(Number);
+  const joinDate = new Date(jParts[0], jParts[1] - 1, jParts[2] || 1);
+  joinDate.setHours(0, 0, 0, 0);
+
+  const dueDateText = joinDate.toLocaleDateString("en-IN", options);
+
+  if (today.getTime() <= joinDate.getTime()) {
+    return { dueDateText, status: "Due Today", pendingMonths: 1 };
   }
 
   const monthDiff =
-    (today.getFullYear() - baselineDate.getFullYear()) * 12 +
-    (today.getMonth() - baselineDate.getMonth());
-
-  let pendingMonths = 1;
-  let status: Status = "Due Today";
-
-  if (lastPaidDateStr) {
-    const lastPaid = new Date(lastPaidDateStr);
-    lastPaid.setHours(0, 0, 0, 0);
-    if (lastPaid >= currentMonthDue) {
-      return { dueDateText, status: "Paid", pendingMonths: 0 };
-    }
-  }
-
-  if (monthDiff > 0) {
-    pendingMonths = Math.max(1, monthDiff);
-    status = "Overdue";
-  } else if (today.getTime() === currentMonthDue.getTime()) {
-    status = "Due Today";
-    pendingMonths = 1;
-  } else if (today.getTime() > currentMonthDue.getTime()) {
-    status = "Overdue";
-    pendingMonths = 1;
-  } else {
-    status = "Due Today";
-    pendingMonths = 1;
-  }
-
-  return { dueDateText, status, pendingMonths };
+    (today.getFullYear() - joinDate.getFullYear()) * 12 +
+    (today.getMonth() - joinDate.getMonth());
+  return { dueDateText, status: "Overdue", pendingMonths: Math.max(1, monthDiff) };
 }
 
 function LibraryView() {
@@ -321,7 +325,6 @@ function LibraryView() {
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // Success Receipt Dialog (Prevents browser popup-blocker issues)
   const [paymentSuccessData, setPaymentSuccessData] = useState<{
     student: Student;
     amount: number;
@@ -330,7 +333,7 @@ function LibraryView() {
     waUrl: string;
   } | null>(null);
 
-  const todayStr = new Date().toISOString().split("T")[0];
+  const todayStr = getLocalDateString();
 
   const [form, setForm] = useState({
     seatNo: "",
@@ -408,7 +411,7 @@ function LibraryView() {
     if (stuData) {
       const formatted: Student[] = stuData.map((item: any) => {
         const joining = item.joining_date || item.due_date || todayStr;
-        const lastPaid = item.last_paid_date || (item.status === "paid" ? todayStr : null);
+        const lastPaid = item.last_paid_date || null;
         const { dueDateText, status, pendingMonths } = calculateMonthlyDue(joining, lastPaid, item.status);
 
         return {
@@ -524,14 +527,13 @@ function LibraryView() {
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
-  // Export to Excel / CSV
   function handleExportCSV() {
     if (students.length === 0) {
       alert("Export karne ke liye koi data nahi hai!");
       return;
     }
 
-    const headers = ["Seat No", "Name", "Phone", "Shift", "Monthly Fee", "Joining Date", "Last Paid Date", "Payment Mode", "Status"];
+    const headers = ["Seat No", "Name", "Phone", "Shift", "Monthly Fee", "Joining Date", "Valid Until Date", "Payment Mode", "Status"];
     const rows = students.map((s) => [
       `"${s.seatNo}"`,
       `"${s.name}"`,
@@ -583,9 +585,8 @@ function LibraryView() {
     setShowModal(true);
   }
 
-  // Vacate Seat / Mark Left (Safe Archive instead of hard delete)
   async function handleMarkLeft(student: Student) {
-    if (!confirm(`Kya aap ${student.name} ki seat khali karke status 'Left' karna chahte hain? Inka purana record aur history safe rahegi.`)) return;
+    if (!confirm(`Kya aap ${student.name} ki seat khali karke status 'Left' karna chahte hain? Inka purana record safe rahega.`)) return;
 
     const { error } = await supabase
       .from("students")
@@ -634,42 +635,25 @@ function LibraryView() {
     setLoadingHistory(false);
   }
 
+  // Collect Fee: Extends Validity to Next Month Cycle Permanently
   async function submitCollectFee(e: React.FormEvent) {
     e.preventDefault();
     if (!collectStudent || !currentLib?.id) return;
 
     const today = new Date();
-    const todayStr = today.toISOString().split("T")[0];
-    const paidUntil = new Date(
-      today.getFullYear(),
-      today.getMonth() + (collectMonths - 1),
-      today.getDate()
-    );
-    const paidUntilStr = paidUntil.toISOString().split("T")[0];
+    const todayStr = getLocalDateString(today);
+
+    // 1 Month fee collect hone par next month cycle calculate karein
+    const paidUntil = new Date(today);
+    paidUntil.setMonth(paidUntil.getMonth() + collectMonths);
+    const paidUntilStr = getLocalDateString(paidUntil);
+
     const totalCollected = collectStudent.monthlyFee * collectMonths;
     const targetStudent = collectStudent;
     const chosenMode = paymentMode;
     const countMonths = collectMonths;
 
-    const { error: ledgerError } = await supabase.from("fee_payments").insert([
-      {
-        library_id: currentLib.id,
-        student_id: targetStudent.id,
-        student_name: targetStudent.name,
-        seat_no: targetStudent.seatNo,
-        amount_paid: totalCollected,
-        months_count: countMonths,
-        payment_mode: chosenMode,
-        payment_date: todayStr,
-        paid_until_date: paidUntilStr,
-      },
-    ]);
-
-    if (ledgerError) {
-      alert("Payment record save karne me dikkat aayi: " + ledgerError.message);
-      return;
-    }
-
+    // 1. Update Student Table in Supabase
     const { error: studentError } = await supabase
       .from("students")
       .update({
@@ -679,24 +663,50 @@ function LibraryView() {
       })
       .eq("id", targetStudent.id);
 
-    if (!studentError) {
-      setStudents((prev) =>
-        prev.map((s) =>
-          s.id === targetStudent.id
-            ? {
-                ...s,
-                lastPaidDate: paidUntilStr,
-                lastPaymentMode: chosenMode,
-                status: "Paid" as const,
-                pendingMonths: 0,
-              }
-            : s
-        )
-      );
+    if (studentError) {
+      alert("Payment save nahi hui: " + studentError.message);
+      return;
+    }
 
-      setCollectStudent(null);
+    // 2. Permanent Ledger Insert in Supabase
+    try {
+      await supabase.from("fee_payments").insert([
+        {
+          library_id: currentLib.id,
+          student_id: targetStudent.id,
+          student_name: targetStudent.name,
+          seat_no: targetStudent.seatNo || "FLOATING",
+          amount_paid: totalCollected,
+          months_count: countMonths,
+          payment_mode: chosenMode,
+          payment_date: todayStr,
+          paid_until_date: paidUntilStr,
+        },
+      ]);
+    } catch (err) {
+      console.warn("Ledger insert error:", err);
+    }
 
-      // Auto Download PDF
+    // 3. UI Update (Status immediately Paid with 0 pending)
+    setStudents((prev) =>
+      prev.map((s) =>
+        s.id === targetStudent.id
+          ? {
+              ...s,
+              lastPaidDate: paidUntilStr,
+              lastPaymentMode: chosenMode,
+              status: "Paid" as const,
+              pendingMonths: 0,
+            }
+          : s
+      )
+    );
+
+    setCollectStudent(null);
+    showToast(`Fees successfully collect ho gayi (${chosenMode})!`);
+
+    // 4. Download Format 1 PDF Receipt
+    try {
       downloadReceiptPDF(
         currentLib.name || "Library",
         currentLib.owner_name || "Manager",
@@ -706,26 +716,24 @@ function LibraryView() {
         countMonths,
         chosenMode
       );
-
-      // Prepare WhatsApp Link
-      const seatInfo = targetStudent.shift === "Random" ? "Floating Seat" : `Seat ${targetStudent.seatNo}`;
-      const waText = `Namaste ${targetStudent.name},\n\nWe have received your library fee payment of ${formatINR(totalCollected)} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}).\n\nYour official PDF receipt is attached.\n\nThank you,\n${currentLib.name || "Library"}`;
-      const waUrl = `https://wa.me/91${targetStudent.phone}?text=${encodeURIComponent(waText)}`;
-
-      // Show confirmation dialog with manual trigger buttons (prevents browser popup-blocker)
-      setPaymentSuccessData({
-        student: targetStudent,
-        amount: totalCollected,
-        months: countMonths,
-        mode: chosenMode,
-        waUrl: waUrl,
-      });
-
-      // Attempt popup open safely
-      window.open(waUrl, "_blank", "noopener,noreferrer");
-    } else {
-      alert("Student status update nahi ho saka: " + studentError.message);
+    } catch (pdfErr) {
+      console.error("PDF generation error:", pdfErr);
     }
+
+    // 5. WhatsApp Message
+    const seatInfo = targetStudent.shift === "Random" ? "Floating Seat" : `Seat ${targetStudent.seatNo}`;
+    const waText = `Namaste ${targetStudent.name},\n\nWe have received your library fee payment of ${formatINR(totalCollected)} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}).\n\nYour official PDF receipt is attached.\n\nThank you,\n${currentLib.name || "Library"}`;
+    const waUrl = `https://wa.me/91${targetStudent.phone}?text=${encodeURIComponent(waText)}`;
+
+    setPaymentSuccessData({
+      student: targetStudent,
+      amount: totalCollected,
+      months: countMonths,
+      mode: chosenMode,
+      waUrl: waUrl,
+    });
+
+    window.open(waUrl, "_blank", "noopener,noreferrer");
   }
 
   async function handleSaveSeatConfiguration() {
@@ -1052,7 +1060,7 @@ function LibraryView() {
                   <th className="px-5 py-3 font-medium">Shift</th>
                   <th className="px-5 py-3 font-medium">Monthly Fee</th>
                   <th className="px-5 py-3 font-medium">Joining Date</th>
-                  <th className="px-5 py-3 font-medium">Last Paid On</th>
+                  <th className="px-5 py-3 font-medium">Valid Until (Next Due)</th>
                   <th className="px-5 py-3 font-medium">Pending Dues</th>
                   <th className="px-5 py-3 font-medium">Status</th>
                   <th className="px-5 py-3 font-medium text-center">Actions</th>
@@ -1163,7 +1171,7 @@ function LibraryView() {
                           <button
                             type="button"
                             onClick={() => handleOpenEdit(student)}
-                            className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
+                            className="rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
                           >
                             Edit
                           </button>
@@ -1485,7 +1493,7 @@ function LibraryView() {
               <div>
                 <h3 className="text-lg font-bold text-slate-900">Payment History</h3>
                 <p className="text-xs text-slate-500">
-                  Student: <strong className="text-slate-800">{historyStudent.name}</strong> ({historyStudent.shift === "Random" ? "Floating Seat" : `Seat ${historyStudent.seatNo}`})
+                  Student: <strong className="text-slate-800">{historyStudent.name}</strong> ({historyStudent.shift === "Random" ? "Floating Seat" : `Seat ${historyStudent.seatNo}`})[cite: 1, 6]
                 </p>
               </div>
               <button onClick={() => setHistoryStudent(null)} className="text-slate-400 hover:text-slate-600">✕</button>
