@@ -239,7 +239,6 @@ function downloadReceiptPDF(
   doc.save(`${student.name.replace(/\s+/g, "_")}_Fee_Receipt.pdf`);
 }
 
-// 🟢 FIXED MONTHLY ANNIVERSARY DUE DATE LOGIC & NEW STUDENT DUE STATUS
 function calculateMonthlyDue(
   joiningDateStr: string,
   lastPaidDateStr: string | null,
@@ -257,7 +256,6 @@ function calculateMonthlyDue(
   const joinDate = new Date(jParts[0], jParts[1] - 1, joinDay);
   joinDate.setHours(0, 0, 0, 0);
 
-  // 1. Agar student naya hai aur payment nahi hui hai
   if (!lastPaidDateStr) {
     const dueDateText = joinDate.toLocaleDateString("en-IN", {
       day: "numeric",
@@ -271,7 +269,6 @@ function calculateMonthlyDue(
     };
   }
 
-  // 2. Agar student pay kar chuka hai (Anniversary day calculation)
   const baseDate = new Date(lastPaidDateStr);
   baseDate.setHours(0, 0, 0, 0);
 
@@ -406,20 +403,30 @@ function LibraryView() {
     router.replace("/");
   };
 
+  // 🟢 ANTI-LOGOUT ON BROWSER BACK NAVIGATION FIX
   useEffect(() => {
-    if (!libId) {
+    const activeId = libId || (typeof window !== "undefined" ? localStorage.getItem("active_library_id") : null);
+
+    if (!activeId) {
       router.replace("/");
       return;
     }
-    localStorage.setItem("active_library_id", libId);
+
+    if (!libId && activeId) {
+      router.replace(`/library?id=${activeId}`);
+      return;
+    }
+
+    localStorage.setItem("active_library_id", activeId);
     setIsAuthorized(true);
   }, [libId, router]);
 
-  // 🟢 ZERO-FREEZE INSTANT CACHE + 3.5s TIMEOUT FETCH
+  // 🟢 ZERO-FREEZE INSTANT CACHE & 3.5s NETWORK TIMEOUT
   const loadData = async () => {
-    if (!libId) return;
+    const targetId = libId || (typeof window !== "undefined" ? localStorage.getItem("active_library_id") : null);
+    if (!targetId) return;
 
-    const cacheKey = `lib_full_cache_${libId}`;
+    const cacheKey = `lib_full_cache_${targetId}`;
     const cached = localStorage.getItem(cacheKey);
     if (cached) {
       try {
@@ -452,7 +459,7 @@ function LibraryView() {
       const fetchLib = supabase
         .from("libraries")
         .select("*")
-        .eq("id", libId)
+        .eq("id", targetId)
         .maybeSingle();
 
       const { data: libData, error: libErr }: any = await Promise.race([fetchLib, timeoutPromise]);
@@ -883,7 +890,7 @@ function LibraryView() {
     setCollectStudent(student);
     setCollectMonths(Math.max(1, student.pendingMonths));
     setPaymentMode("Cash");
-    setCollectCustomDate(getLocalDateString()); // Aaj ki date auto-select
+    setCollectCustomDate(getLocalDateString());
   }
 
   async function handleOpenHistory(student: Student) {
@@ -904,7 +911,6 @@ function LibraryView() {
     setLoadingHistory(false);
   }
 
-  // 🟢 COLLECT FEE: CUSTOM DATE & ANNIVERSARY ADVANCEMENT
   async function submitCollectFee(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -1018,12 +1024,13 @@ function LibraryView() {
       return;
     }
 
-    if (!libId) return;
+    const targetId = libId || localStorage.getItem("active_library_id");
+    if (!targetId) return;
 
     const { error } = await supabase
       .from("libraries")
       .update({ seats_config: seatConfigInput })
-      .eq("id", libId);
+      .eq("id", targetId);
 
     if (error) {
       alert("Error saving seats to database: " + error.message);
@@ -1034,7 +1041,6 @@ function LibraryView() {
     showToast(`Total ${parsed.length} seats Supabase me save ho gayi!`);
   }
 
-  // 🟢 SAFE SAVE STUDENT: NAYA STUDENT DUE TODAY RAHEGA
   async function handleSaveStudent(event: React.FormEvent) {
     event.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -1085,8 +1091,8 @@ function LibraryView() {
         monthly_fee: fee,
         joining_date: form.joiningDate,
         due_date: dueDateText,
-        last_paid_date: null, // Naye student ka last paid null rahega
-        status: "due",        // Status due rahega
+        last_paid_date: null,
+        status: "due",
         library_id: currentLib?.id,
       };
 
@@ -1120,7 +1126,11 @@ function LibraryView() {
       }
 
       if (editingId) {
-        const { error } = await supabase.from("students").update(payload).eq("id", editingId);
+        const { error } = await supabase
+          .from("students")
+          .update(payload)
+          .eq("id", editingId);
+
         if (error) throw error;
 
         setStudents((prev) =>
@@ -1176,7 +1186,7 @@ function LibraryView() {
             lastPaidDate: null,
             lastPaymentMode: "Cash",
             dueDate: dueDateText,
-            status: "Due Today", // Collect ₹ button turant samne aayega
+            status: "Due Today",
             pendingMonths: 1,
           },
           ...prev,
@@ -1385,7 +1395,7 @@ function LibraryView() {
 
           <article
             onClick={() => setShowVacantModal(true)}
-            className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(16,185,129,0.08)] cursor-pointer hover:border-emerald-300 transition hover:-translate-y-0.5"
+            className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(160,185,129,0.08)] cursor-pointer hover:border-emerald-300 transition hover:-translate-y-0.5"
           >
             <div className="flex justify-between items-start">
               <p className="text-xs font-bold text-emerald-950 uppercase tracking-wide">Vacant Seats</p>
@@ -1977,7 +1987,6 @@ function LibraryView() {
               </button>
             </div>
 
-            {/* Re-Admission Badge */}
             {rejoiningStudent && (
               <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] p-2.5 rounded-xl flex items-center justify-between font-medium">
                 <span>✨ <strong>Old Student Recognized:</strong> {rejoiningStudent.name} (Purani payment history linked rahegi)</span>
