@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect, Suspense } from "react";
+import { useMemo, useState, useEffect, Suspense, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 import jsPDF from "jspdf";
@@ -78,17 +78,17 @@ function formatDate(dateStr: string | null) {
 }
 
 function shiftBadge(shift: Shift) {
-  if (shift === "Morning") return "bg-amber-50 text-amber-700 ring-1 ring-amber-200";
-  if (shift === "Evening") return "bg-indigo-50 text-indigo-700 ring-1 ring-indigo-200";
-  if (shift === "Full Day") return "bg-violet-50 text-violet-700 ring-1 ring-violet-200";
-  return "bg-rose-50 text-rose-700 ring-1 ring-rose-200";
+  if (shift === "Morning") return "bg-amber-100 text-amber-900 border border-amber-300 font-bold";
+  if (shift === "Evening") return "bg-blue-100 text-blue-900 border border-blue-300 font-bold";
+  if (shift === "Full Day") return "bg-purple-100 text-purple-900 border border-purple-300 font-bold";
+  return "bg-rose-100 text-rose-900 border border-rose-300 font-bold";
 }
 
 function statusBadge(status: Status) {
-  if (status === "Paid") return "bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200";
-  if (status === "Overdue") return "bg-red-50 text-red-700 ring-1 ring-red-200";
-  if (status === "Left") return "bg-slate-100 text-slate-600 ring-1 ring-slate-300";
-  return "bg-orange-50 text-orange-700 ring-1 ring-orange-200";
+  if (status === "Paid") return "bg-emerald-100 text-emerald-800 border border-emerald-300 font-bold";
+  if (status === "Overdue") return "bg-rose-100 text-rose-800 border border-rose-300 font-bold";
+  if (status === "Left") return "bg-slate-100 text-slate-600 border border-slate-300 font-bold";
+  return "bg-amber-100 text-amber-800 border border-amber-300 font-bold";
 }
 
 const SEAT_COLLATOR = { numeric: true, sensitivity: "base" } as const;
@@ -134,17 +134,14 @@ function downloadReceiptPDF(
   student: Student,
   amount: number,
   months: number,
-  mode: string
+  mode: string,
+  paymentDateStr: string = getLocalDateString()
 ) {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a5" });
   const receiptNo = `LIB-${Date.now().toString().slice(-6)}`;
-  const dateStr = new Date().toLocaleDateString("en-IN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  const dateStr = formatDate(paymentDateStr);
 
-  const nextDue = new Date();
+  const nextDue = new Date(paymentDateStr);
   nextDue.setMonth(nextDue.getMonth() + months);
   const validTill = nextDue.toLocaleDateString("en-IN", {
     day: "numeric",
@@ -178,7 +175,7 @@ function downloadReceiptPDF(
   doc.setFontSize(8.5);
   doc.setTextColor(71, 85, 105);
   doc.text(`Receipt No: ${receiptNo}`, 14, 46);
-  doc.text(`Date: ${dateStr}`, 14, 52);
+  doc.text(`Payment Date: ${dateStr}`, 14, 52);
   doc.text(`Status: PAID & VERIFIED`, 134, 46, { align: "right" });
   doc.text(`Payment Mode: ${mode}`, 134, 52, { align: "right" });
 
@@ -242,6 +239,7 @@ function downloadReceiptPDF(
   doc.save(`${student.name.replace(/\s+/g, "_")}_Fee_Receipt.pdf`);
 }
 
+// 🟢 FIXED MONTHLY ANNIVERSARY DUE DATE LOGIC & NEW STUDENT DUE STATUS
 function calculateMonthlyDue(
   joiningDateStr: string,
   lastPaidDateStr: string | null,
@@ -253,43 +251,52 @@ function calculateMonthlyDue(
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const options: Intl.DateTimeFormatOptions = { day: "numeric", month: "short", year: "numeric" };
-
-  if (lastPaidDateStr) {
-    const parts = lastPaidDateStr.split("-").map(Number);
-    const validUntil = new Date(parts[0], parts[1] - 1, parts[2] || 1);
-    validUntil.setHours(0, 0, 0, 0);
-
-    const dueDateText = validUntil.toLocaleDateString("en-IN", options);
-
-    if (validUntil > today) {
-      return { dueDateText, status: "Paid", pendingMonths: 0 };
-    }
-
-    if (validUntil.getTime() === today.getTime()) {
-      return { dueDateText, status: "Due Today", pendingMonths: 1 };
-    }
-
-    const monthDiff =
-      (today.getFullYear() - validUntil.getFullYear()) * 12 +
-      (today.getMonth() - validUntil.getMonth());
-    return { dueDateText, status: "Overdue", pendingMonths: Math.max(1, monthDiff) };
-  }
 
   const jParts = (joiningDateStr || getLocalDateString()).split("-").map(Number);
-  const joinDate = new Date(jParts[0], jParts[1] - 1, jParts[2] || 1);
+  const joinDay = jParts[2] || 1;
+  const joinDate = new Date(jParts[0], jParts[1] - 1, joinDay);
   joinDate.setHours(0, 0, 0, 0);
 
-  const dueDateText = joinDate.toLocaleDateString("en-IN", options);
-
-  if (today.getTime() <= joinDate.getTime()) {
-    return { dueDateText, status: "Due Today", pendingMonths: 1 };
+  // 1. Agar student naya hai aur payment nahi hui hai
+  if (!lastPaidDateStr) {
+    const dueDateText = joinDate.toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+    return {
+      dueDateText,
+      status: "Due Today",
+      pendingMonths: 1,
+    };
   }
 
-  const monthDiff =
-    (today.getFullYear() - joinDate.getFullYear()) * 12 +
-    (today.getMonth() - joinDate.getMonth());
-  return { dueDateText, status: "Overdue", pendingMonths: Math.max(1, monthDiff) };
+  // 2. Agar student pay kar chuka hai (Anniversary day calculation)
+  const baseDate = new Date(lastPaidDateStr);
+  baseDate.setHours(0, 0, 0, 0);
+
+  const targetDue = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 1);
+  const maxDaysInTargetMonth = new Date(targetDue.getFullYear(), targetDue.getMonth() + 1, 0).getDate();
+  targetDue.setDate(Math.min(joinDay, maxDaysInTargetMonth));
+  targetDue.setHours(0, 0, 0, 0);
+
+  const dueDateText = targetDue.toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  });
+
+  const diffTime = today.getTime() - targetDue.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+  if (diffDays > 30) {
+    const monthDiff = Math.max(2, Math.floor(diffDays / 30) + 1);
+    return { dueDateText, status: "Overdue", pendingMonths: monthDiff };
+  } else if (diffDays >= 0) {
+    return { dueDateText, status: diffDays === 0 ? "Due Today" : "Overdue", pendingMonths: 1 };
+  } else {
+    return { dueDateText, status: "Paid", pendingMonths: 0 };
+  }
 }
 
 function LibraryView() {
@@ -297,8 +304,9 @@ function LibraryView() {
   const searchParams = useSearchParams();
   const libId = searchParams.get("id");
 
-  const [activeTab, setActiveTab] = useState<"students" | "inquiries">("students");
+  const [activeTab, setActiveTab] = useState<"students" | "seats" | "inquiries">("students");
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
+  const [isOnline, setIsOnline] = useState<boolean>(true);
   const [currentLib, setCurrentLib] = useState<LibraryInfo | null>(null);
   const [isLibraryActive, setIsLibraryActive] = useState<boolean | null>(null);
   const [students, setStudents] = useState<Student[]>([]);
@@ -312,20 +320,24 @@ function LibraryView() {
   const [formError, setFormError] = useState("");
   const [uploadingLogo, setUploadingLogo] = useState(false);
 
+  const [savingStudent, setSavingStudent] = useState(false);
+  const [rejoiningStudent, setRejoiningStudent] = useState<Student | null>(null);
+
   const [allSeatNames, setAllSeatNames] = useState<string[]>([]);
   const [seatConfigInput, setSeatConfigInput] = useState("A1-A25, B1-B25");
   const [showVacantModal, setShowVacantModal] = useState(false);
+  const [seatShiftView, setSeatShiftView] = useState<Shift | "All">("Morning");
   const [vacantShiftFilter, setVacantShiftFilter] = useState<Shift | "All">("All");
 
   const [collectStudent, setCollectStudent] = useState<Student | null>(null);
   const [collectMonths, setCollectMonths] = useState<number>(1);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("Cash");
+  const [collectCustomDate, setCollectCustomDate] = useState<string>(getLocalDateString());
 
   const [historyStudent, setHistoryStudent] = useState<Student | null>(null);
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // Inquiry States
   const [showInquiryModal, setShowInquiryModal] = useState(false);
   const [inquiryForm, setInquiryForm] = useState({
     name: "",
@@ -344,9 +356,11 @@ function LibraryView() {
     months: number;
     mode: string;
     waUrl: string;
+    paymentDate: string;
   } | null>(null);
 
   const todayStr = getLocalDateString();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [form, setForm] = useState({
     seatNo: "",
@@ -356,6 +370,33 @@ function LibraryView() {
     monthlyFee: "900",
     joiningDate: todayStr,
   });
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      setIsOnline(navigator.onLine);
+      const onOn = () => setIsOnline(true);
+      const onOff = () => setIsOnline(false);
+      window.addEventListener("online", onOn);
+      window.addEventListener("offline", onOff);
+
+      if ("serviceWorker" in navigator) {
+        navigator.serviceWorker.register("/sw.js").catch(() => {});
+      }
+
+      return () => {
+        window.removeEventListener("online", onOn);
+        window.removeEventListener("offline", onOff);
+      };
+    }
+  }, []);
+
+  const checkOnlineStatus = (): boolean => {
+    if (typeof window !== "undefined" && !navigator.onLine) {
+      alert("⚠️ Internet band hai! Naya admission lene ya fees collect karne ke liye kripya internet on karein.");
+      return false;
+    }
+    return true;
+  };
 
   const handleLogout = () => {
     if (typeof window !== "undefined") {
@@ -370,94 +411,132 @@ function LibraryView() {
       router.replace("/");
       return;
     }
-
-    const sessionLibId =
-      sessionStorage.getItem("active_library_id") || localStorage.getItem("active_library_id");
-    if (!sessionLibId || sessionLibId.trim() !== libId.trim()) {
-      router.replace("/");
-      return;
-    }
-
+    localStorage.setItem("active_library_id", libId);
     setIsAuthorized(true);
   }, [libId, router]);
 
+  // 🟢 ZERO-FREEZE INSTANT CACHE + 3.5s TIMEOUT FETCH
   const loadData = async () => {
     if (!libId) return;
-    setLoading(true);
 
-    const { data: libData, error: libErr } = await supabase
-      .from("libraries")
-      .select("*")
-      .eq("id", libId)
-      .maybeSingle();
-
-    if (libErr || !libData) {
-      router.replace("/");
-      return;
+    const cacheKey = `lib_full_cache_${libId}`;
+    const cached = localStorage.getItem(cacheKey);
+    if (cached) {
+      try {
+        const parsed = JSON.parse(cached);
+        if (parsed.currentLib) {
+          setCurrentLib(parsed.currentLib);
+          const savedConfig = parsed.currentLib.seats_config || "A1-A25, B1-B25";
+          setSeatConfigInput(savedConfig);
+          setAllSeatNames(parseCustomSeats(savedConfig));
+          setIsLibraryActive(parsed.currentLib.plan_status !== "inactive");
+        }
+        setStudents(parsed.students || []);
+        setInquiries(parsed.inquiries || []);
+        setLoading(false);
+      } catch (e) {
+        console.error("Cache read failed", e);
+      }
     }
 
-    const selected = libData as LibraryInfo;
-    setCurrentLib(selected);
-
-    const savedConfig = selected.seats_config || "A1-A25, B1-B25";
-    setSeatConfigInput(savedConfig);
-    setAllSeatNames(parseCustomSeats(savedConfig));
-
-    const isDateExpired = selected.expiry_date
-      ? new Date(selected.expiry_date).getTime() < new Date().setHours(0, 0, 0, 0)
-      : false;
-
-    if (selected.plan_status === "inactive" || isDateExpired) {
-      setIsLibraryActive(false);
+    if (typeof window !== "undefined" && !navigator.onLine) {
       setLoading(false);
       return;
     }
 
-    setIsLibraryActive(true);
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Network timeout")), 3500)
+    );
 
-    // Load Students
-    const { data: stuData } = await supabase
-      .from("students")
-      .select("*")
-      .eq("library_id", selected.id)
-      .order("created_at", { ascending: false });
+    try {
+      const fetchLib = supabase
+        .from("libraries")
+        .select("*")
+        .eq("id", libId)
+        .maybeSingle();
 
-    if (stuData) {
-      const formatted: Student[] = stuData.map((item: any) => {
-        const joining = item.joining_date || item.due_date || todayStr;
-        const lastPaid = item.last_paid_date || null;
-        const { dueDateText, status, pendingMonths } = calculateMonthlyDue(joining, lastPaid, item.status);
+      const { data: libData, error: libErr }: any = await Promise.race([fetchLib, timeoutPromise]);
 
-        return {
-          id: item.id,
-          seatNo: item.seat_no || "FLOATING",
-          name: item.name,
-          phone: item.phone,
-          shift: (item.shift || "Morning") as Shift,
-          monthlyFee: Number(item.monthly_fee),
-          joiningDate: joining,
-          lastPaidDate: lastPaid,
-          lastPaymentMode: item.last_payment_mode || "Cash",
-          dueDate: dueDateText,
-          status: status,
-          pendingMonths: pendingMonths,
-        };
-      });
-      setStudents(formatted);
+      if (libErr || !libData) {
+        if (!cached) router.replace("/");
+        return;
+      }
+
+      const selected = libData as LibraryInfo;
+      setCurrentLib(selected);
+
+      const savedConfig = selected.seats_config || "A1-A25, B1-B25";
+      setSeatConfigInput(savedConfig);
+      const parsedSeatNames = parseCustomSeats(savedConfig);
+      setAllSeatNames(parsedSeatNames);
+
+      const isDateExpired = selected.expiry_date
+        ? new Date(selected.expiry_date).getTime() < new Date().setHours(0, 0, 0, 0)
+        : false;
+
+      if (selected.plan_status === "inactive" || isDateExpired) {
+        setIsLibraryActive(false);
+        setLoading(false);
+        return;
+      }
+
+      setIsLibraryActive(true);
+
+      const fetchStudents = supabase
+        .from("students")
+        .select("*")
+        .eq("library_id", selected.id)
+        .order("created_at", { ascending: false });
+
+      const { data: stuData }: any = await Promise.race([fetchStudents, timeoutPromise]);
+
+      let formattedStudents: Student[] = [];
+      if (stuData) {
+        formattedStudents = stuData.map((item: any) => {
+          const joining = item.joining_date || item.due_date || todayStr;
+          const lastPaid = item.last_paid_date || null;
+          const { dueDateText, status, pendingMonths } = calculateMonthlyDue(joining, lastPaid, item.status);
+
+          return {
+            id: item.id,
+            seatNo: item.seat_no || "FLOATING",
+            name: item.name,
+            phone: item.phone,
+            shift: (item.shift || "Morning") as Shift,
+            monthlyFee: Number(item.monthly_fee),
+            joiningDate: joining,
+            lastPaidDate: lastPaid,
+            lastPaymentMode: item.last_payment_mode || "Cash",
+            dueDate: dueDateText,
+            status: status,
+            pendingMonths: pendingMonths,
+          };
+        });
+        setStudents(formattedStudents);
+      }
+
+      const { data: inqData } = await supabase
+        .from("inquiries")
+        .select("*")
+        .eq("library_id", selected.id)
+        .order("created_at", { ascending: false });
+
+      const finalInquiries = (inqData as Inquiry[]) || [];
+      setInquiries(finalInquiries);
+
+      localStorage.setItem(
+        cacheKey,
+        JSON.stringify({
+          currentLib: selected,
+          students: formattedStudents,
+          inquiries: finalInquiries,
+        })
+      );
+    } catch (err) {
+      console.warn("Using instant cache fallback:", err);
+    } finally {
+      setLoading(false);
     }
-
-    // Load Inquiries
-    const { data: inqData } = await supabase
-      .from("inquiries")
-      .select("*")
-      .eq("library_id", selected.id)
-      .order("created_at", { ascending: false });
-
-    if (inqData) {
-      setInquiries(inqData as Inquiry[]);
-    }
-
-    setLoading(false);
   };
 
   useEffect(() => {
@@ -466,8 +545,8 @@ function LibraryView() {
     }
   }, [isAuthorized, libId]);
 
-  // LOGO UPLOAD FUNCTION (CLICKABLE LOGO)
   async function handleLogoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    if (!checkOnlineStatus()) return;
     const file = e.target.files?.[0];
     if (!file || !currentLib?.id) return;
 
@@ -481,9 +560,7 @@ function LibraryView() {
         .from("library-logos")
         .upload(filePath, file, { upsert: true });
 
-      if (uploadError) {
-        throw uploadError;
-      }
+      if (uploadError) throw uploadError;
 
       const { data: publicUrlData } = supabase.storage
         .from("library-logos")
@@ -496,9 +573,7 @@ function LibraryView() {
         .update({ logo_url: publicUrl })
         .eq("id", currentLib.id);
 
-      if (updateError) {
-        throw updateError;
-      }
+      if (updateError) throw updateError;
 
       setCurrentLib((prev) => (prev ? { ...prev, logo_url: publicUrl } : null));
       showToast("Library logo successfully updated!");
@@ -518,7 +593,23 @@ function LibraryView() {
     return Array.from(new Set(fixedStudents.map((s) => s.seatNo.toUpperCase())));
   }, [fixedStudents]);
 
-  // VACANT SEAT CALCULATION (Corrected spelling)
+  const seatGridOccupantMap = useMemo(() => {
+    const map = new Map<string, Student>();
+    activeStudents.forEach((s) => {
+      if (s.seatNo !== "FLOATING" && s.seatNo !== "VACATED" && s.shift !== "Random") {
+        if (
+          seatShiftView === "All" ||
+          s.shift === seatShiftView ||
+          s.shift === "Full Day" ||
+          seatShiftView === "Full Day"
+        ) {
+          map.set(s.seatNo.trim().toUpperCase(), s);
+        }
+      }
+    });
+    return map;
+  }, [activeStudents, seatShiftView]);
+
   const vacantSeatList = useMemo(() => {
     const bookedSet = new Set(
       activeStudents
@@ -544,11 +635,11 @@ function LibraryView() {
   const monthRevenue = paid.reduce((sum, s) => sum + s.monthlyFee, 0);
 
   const filters: { id: Filter; label: string }[] = [
-    { id: "all", label: `Active Students (${activeStudents.length})` },
+    { id: "all", label: `Active (${activeStudents.length})` },
     { id: "due", label: `Due Today (${dueToday.length})` },
     { id: "overdue", label: `Overdue (${overdue.length})` },
     { id: "paid", label: `Paid (${paid.length})` },
-    { id: "left", label: `Left / Vacated (${leftStudents.length})` },
+    { id: "left", label: `Left (${leftStudents.length})` },
   ];
 
   const filtered = useMemo(() => {
@@ -597,9 +688,35 @@ function LibraryView() {
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
-  // Inquiry Operations
+  const handlePhoneChange = (enteredPhone: string) => {
+    const cleanPhone = enteredPhone.replace(/\D/g, "").slice(-10);
+    setForm((prev) => ({ ...prev, phone: cleanPhone }));
+
+    if (!editingId && cleanPhone.length === 10) {
+      const existing = students.find((s) => s.phone === cleanPhone);
+      if (existing) {
+        if (existing.status === "Left") {
+          setRejoiningStudent(existing);
+          setForm((prev) => ({
+            ...prev,
+            name: existing.name,
+            monthlyFee: String(existing.monthlyFee),
+            shift: existing.shift,
+          }));
+          showToast(`Purana student found (${existing.name})! Re-admission mode active.`);
+        } else {
+          setFormError(`⚠️ Yeh student already active hai (Seat: #${existing.seatNo})!`);
+        }
+      } else {
+        setRejoiningStudent(null);
+        setFormError("");
+      }
+    }
+  };
+
   async function handleAddInquiry(e: React.FormEvent) {
     e.preventDefault();
+    if (!checkOnlineStatus()) return;
     if (!currentLib?.id) return;
 
     const payload = {
@@ -623,6 +740,7 @@ function LibraryView() {
   }
 
   async function handleDeleteInquiry(id: string) {
+    if (!checkOnlineStatus()) return;
     if (!confirm("Are you sure you want to delete this inquiry?")) return;
     const { error } = await supabase.from("inquiries").delete().eq("id", id);
     if (!error) {
@@ -660,7 +778,17 @@ function LibraryView() {
       return;
     }
 
-    const headers = ["Seat No", "Name", "Phone", "Shift", "Monthly Fee", "Joining Date", "Valid Until Date", "Payment Mode", "Status"];
+    const headers = [
+      "Seat No",
+      "Name",
+      "Phone",
+      "Shift",
+      "Monthly Fee",
+      "Joining Date",
+      "Valid Until Date",
+      "Payment Mode",
+      "Status",
+    ];
     const rows = students.map((s) => [
       `"${s.seatNo}"`,
       `"${s.name}"`,
@@ -668,12 +796,13 @@ function LibraryView() {
       `"${s.shift}"`,
       s.monthlyFee,
       `"${s.joiningDate}"`,
-      `"${s.lastPaidDate || 'N/A'}"`,
-      `"${s.lastPaymentMode || 'Cash'}"`,
+      `"${s.lastPaidDate || "N/A"}"`,
+      `"${s.lastPaymentMode || "Cash"}"`,
       `"${s.status}"`,
     ]);
 
-    const csvContent = "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
+    const csvContent =
+      "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
@@ -686,6 +815,8 @@ function LibraryView() {
 
   function handleOpenAdd(suggestedSeat = "") {
     setEditingId(null);
+    setRejoiningStudent(null);
+    setSavingStudent(false);
     setForm({
       seatNo: suggestedSeat,
       name: "",
@@ -700,6 +831,8 @@ function LibraryView() {
 
   function handleOpenEdit(student: Student) {
     setEditingId(student.id);
+    setRejoiningStudent(null);
+    setSavingStudent(false);
     setForm({
       seatNo: student.seatNo === "FLOATING" ? "" : student.seatNo,
       name: student.name,
@@ -713,7 +846,13 @@ function LibraryView() {
   }
 
   async function handleMarkLeft(student: Student) {
-    if (!confirm(`Kya aap ${student.name} ki seat khali karke status 'Left' karna chahte hain? Inka purana record safe rahega.`)) return;
+    if (!checkOnlineStatus()) return;
+    if (
+      !confirm(
+        `Kya aap ${student.name} ki seat khali karke status 'Left' karna chahte hain? Inka purana record safe rahega.`
+      )
+    )
+      return;
 
     const { error } = await supabase
       .from("students")
@@ -729,7 +868,9 @@ function LibraryView() {
   }
 
   async function handleDelete(id: string, name: string) {
-    if (!confirm(`Permanently Delete: Kya aap sach me ${name} ka record poori tarah hatana chahte hain?`)) return;
+    if (!checkOnlineStatus()) return;
+    if (!confirm(`Permanently Delete: Kya aap sach me ${name} ka record poori tarah hatana chahte hain?`))
+      return;
 
     const { error } = await supabase.from("students").delete().eq("id", id);
     if (!error) {
@@ -742,6 +883,7 @@ function LibraryView() {
     setCollectStudent(student);
     setCollectMonths(Math.max(1, student.pendingMonths));
     setPaymentMode("Cash");
+    setCollectCustomDate(getLocalDateString()); // Aaj ki date auto-select
   }
 
   async function handleOpenHistory(student: Student) {
@@ -762,15 +904,20 @@ function LibraryView() {
     setLoadingHistory(false);
   }
 
+  // 🟢 COLLECT FEE: CUSTOM DATE & ANNIVERSARY ADVANCEMENT
   async function submitCollectFee(e: React.FormEvent) {
     e.preventDefault();
+    if (!checkOnlineStatus()) return;
     if (!collectStudent || !currentLib?.id) return;
 
-    const today = new Date();
-    const todayStr = getLocalDateString(today);
+    const paymentDateUsed = collectCustomDate || getLocalDateString();
+    const jParts = (collectStudent.joiningDate || todayStr).split("-").map(Number);
+    const joinDay = jParts[2] || 1;
 
-    const paidUntil = new Date(today);
-    paidUntil.setMonth(paidUntil.getMonth() + collectMonths);
+    const baseDate = new Date(paymentDateUsed);
+    const paidUntil = new Date(baseDate.getFullYear(), baseDate.getMonth() + collectMonths, 1);
+    const maxDays = new Date(paidUntil.getFullYear(), paidUntil.getMonth() + 1, 0).getDate();
+    paidUntil.setDate(Math.min(joinDay, maxDays));
     const paidUntilStr = getLocalDateString(paidUntil);
 
     const totalCollected = collectStudent.monthlyFee * collectMonths;
@@ -802,7 +949,7 @@ function LibraryView() {
           amount_paid: totalCollected,
           months_count: countMonths,
           payment_mode: chosenMode,
-          payment_date: todayStr,
+          payment_date: paymentDateUsed,
           paid_until_date: paidUntilStr,
         },
       ]);
@@ -835,14 +982,20 @@ function LibraryView() {
         targetStudent,
         totalCollected,
         countMonths,
-        chosenMode
+        chosenMode,
+        paymentDateUsed
       );
     } catch (pdfErr) {
       console.error("PDF generation error:", pdfErr);
     }
 
-    const seatInfo = targetStudent.shift === "Random" ? "Floating Seat" : `Seat ${targetStudent.seatNo}`;
-    const waText = `Namaste ${targetStudent.name},\n\nWe have received your library fee payment of ${formatINR(totalCollected)} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}).\n\nYour official PDF receipt is attached.\n\nThank you,\n${currentLib.name || "LIBRARY MANAGEMENT"}`;
+    const seatInfo =
+      targetStudent.shift === "Random" ? "Floating Seat" : `Seat ${targetStudent.seatNo}`;
+    const waText = `Namaste ${targetStudent.name},\n\nWe have received your library fee payment of ${formatINR(
+      totalCollected
+    )} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}) on ${formatDate(paymentDateUsed)}.\n\nYour official PDF receipt is attached.\n\nThank you,\n${
+      currentLib.name || "LIBRARY MANAGEMENT"
+    }`;
     const waUrl = `https://wa.me/91${targetStudent.phone}?text=${encodeURIComponent(waText)}`;
 
     setPaymentSuccessData({
@@ -851,12 +1004,14 @@ function LibraryView() {
       months: countMonths,
       mode: chosenMode,
       waUrl: waUrl,
+      paymentDate: paymentDateUsed,
     });
 
     window.open(waUrl, "_blank", "noopener,noreferrer");
   }
 
   async function handleSaveSeatConfiguration() {
+    if (!checkOnlineStatus()) return;
     const parsed = parseCustomSeats(seatConfigInput);
     if (parsed.length === 0) {
       alert("Kripya valid seat pattern dalein (jaise A1-A20, B1-B20)");
@@ -879,90 +1034,137 @@ function LibraryView() {
     showToast(`Total ${parsed.length} seats Supabase me save ho gayi!`);
   }
 
+  // 🟢 SAFE SAVE STUDENT: NAYA STUDENT DUE TODAY RAHEGA
   async function handleSaveStudent(event: React.FormEvent) {
     event.preventDefault();
+    if (!checkOnlineStatus()) return;
+
+    if (savingStudent) return;
+    setSavingStudent(true);
     setFormError("");
 
-    const isRandom = form.shift === "Random";
-    const seatNo = isRandom
-      ? (form.seatNo.trim().toUpperCase() || "FLOATING")
-      : form.seatNo.trim().toUpperCase();
+    try {
+      const isRandom = form.shift === "Random";
+      const seatNo = isRandom
+        ? form.seatNo.trim().toUpperCase() || "FLOATING"
+        : form.seatNo.trim().toUpperCase();
 
-    const fee = Number(form.monthlyFee) || 900;
+      const fee = Number(form.monthlyFee) || 900;
+      const cleanPhone = form.phone.replace(/\D/g, "").slice(-10);
 
-    if (!isRandom) {
-      if (!seatNo) {
-        setFormError("Kripya Seat No bharein!");
+      if (!isRandom) {
+        if (!seatNo) {
+          setFormError("Kripya Seat No bharein!");
+          setSavingStudent(false);
+          return;
+        }
+
+        const targetId = editingId || rejoiningStudent?.id;
+        const isBooked = activeStudents.some(
+          (s) =>
+            s.id !== targetId &&
+            s.shift !== "Random" &&
+            s.seatNo.toUpperCase() === seatNo &&
+            (s.shift === form.shift || s.shift === "Full Day" || form.shift === "Full Day")
+        );
+
+        if (isBooked) {
+          setFormError(`Seat ${seatNo} pehle se ${form.shift} shift me booked hai!`);
+          setSavingStudent(false);
+          return;
+        }
+      }
+
+      const { dueDateText, status, pendingMonths } = calculateMonthlyDue(form.joiningDate, null);
+
+      const payload: any = {
+        name: form.name.trim(),
+        phone: cleanPhone,
+        seat_no: seatNo,
+        shift: form.shift,
+        monthly_fee: fee,
+        joining_date: form.joiningDate,
+        due_date: dueDateText,
+        last_paid_date: null, // Naye student ka last paid null rahega
+        status: "due",        // Status due rahega
+        library_id: currentLib?.id,
+      };
+
+      if (rejoiningStudent) {
+        const { error } = await supabase
+          .from("students")
+          .update(payload)
+          .eq("id", rejoiningStudent.id);
+
+        if (error) throw error;
+
+        setStudents((prev) =>
+          prev.map((s) =>
+            s.id === rejoiningStudent.id
+              ? {
+                  ...s,
+                  ...payload,
+                  seatNo,
+                  lastPaidDate: null,
+                  status: "Due Today",
+                  pendingMonths: 1,
+                }
+              : s
+          )
+        );
+
+        showToast(`Welcome back! ${payload.name} ka re-admission ho gaya.`);
+        setShowModal(false);
+        setRejoiningStudent(null);
         return;
       }
 
-      const isBooked = activeStudents.some(
-        (s) =>
-          s.id !== editingId &&
-          s.shift !== "Random" &&
-          s.seatNo.toUpperCase() === seatNo &&
-          (s.shift === form.shift || s.shift === "Full Day" || form.shift === "Full Day")
-      );
+      if (editingId) {
+        const { error } = await supabase.from("students").update(payload).eq("id", editingId);
+        if (error) throw error;
 
-      if (isBooked) {
-        setFormError(`Seat ${seatNo} pehle se ${form.shift} shift me booked hai!`);
-        return;
-      }
-    }
-
-    const { dueDateText, status, pendingMonths } = calculateMonthlyDue(form.joiningDate, null);
-
-    const payload: any = {
-      name: form.name.trim(),
-      phone: form.phone.replace(/\D/g, "").slice(-10),
-      seat_no: seatNo,
-      shift: form.shift,
-      monthly_fee: fee,
-      joining_date: form.joiningDate,
-      due_date: dueDateText,
-      status: status.toLowerCase().replace(" ", "_"),
-      library_id: currentLib?.id,
-    };
-
-    if (editingId) {
-      const { error } = await supabase.from("students").update(payload).eq("id", editingId);
-
-      if (error) {
-        setFormError(error.message);
+        setStudents((prev) =>
+          prev.map((s) =>
+            s.id === editingId
+              ? {
+                  ...s,
+                  seatNo,
+                  name: payload.name,
+                  phone: payload.phone,
+                  shift: form.shift,
+                  monthlyFee: fee,
+                  joiningDate: form.joiningDate,
+                  dueDate: dueDateText,
+                  status: status,
+                  pendingMonths: pendingMonths,
+                }
+              : s
+          )
+        );
+        showToast(`${payload.name} ka data update ho gaya!`);
+        setShowModal(false);
         return;
       }
 
-      setStudents((prev) =>
-        prev.map((s) =>
-          s.id === editingId
-            ? {
-                ...s,
-                seatNo,
-                name: payload.name,
-                phone: payload.phone,
-                shift: form.shift,
-                monthlyFee: fee,
-                joiningDate: form.joiningDate,
-                dueDate: dueDateText,
-                status: status,
-                pendingMonths: pendingMonths,
-              }
-            : s
-        )
-      );
-      showToast(`${payload.name} ka data update ho gaya!`);
-    } else {
+      const { data: existingCheck } = await supabase
+        .from("students")
+        .select("id, status")
+        .eq("library_id", currentLib?.id)
+        .eq("phone", cleanPhone)
+        .maybeSingle();
+
+      if (existingCheck && existingCheck.status !== "left") {
+        setFormError("Yeh phone number already library me active hai!");
+        setSavingStudent(false);
+        return;
+      }
+
       const { data, error } = await supabase.from("students").insert([payload]).select();
-
-      if (error) {
-        setFormError(error.message);
-        return;
-      }
+      if (error) throw error;
 
       if (data && data.length > 0) {
         const added = data[0];
         setStudents((prev) => [
-          ...prev,
           {
             id: added.id,
             seatNo: added.seat_no,
@@ -974,9 +1176,10 @@ function LibraryView() {
             lastPaidDate: null,
             lastPaymentMode: "Cash",
             dueDate: dueDateText,
-            status: status,
-            pendingMonths: pendingMonths,
+            status: "Due Today", // Collect ₹ button turant samne aayega
+            pendingMonths: 1,
           },
+          ...prev,
         ]);
         showToast(
           isRandom
@@ -984,15 +1187,20 @@ function LibraryView() {
             : `${payload.name} ko seat ${seatNo} par jod diya.`
         );
       }
-    }
 
-    setShowModal(false);
+      setShowModal(false);
+    } catch (err: any) {
+      alert("Student save karne me error aaya: " + (err.message || "Unknown error"));
+    } finally {
+      setSavingStudent(false);
+    }
   }
 
   if (isAuthorized === null) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center text-slate-400 text-sm">
-        Verifying Session Access...
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center gap-3 text-slate-400 text-sm">
+        <img src="/logo.png" alt="Logo" className="w-14 h-14 rounded-2xl animate-pulse" />
+        <p>Verifying Session Access...</p>
       </div>
     );
   }
@@ -1016,6 +1224,7 @@ function LibraryView() {
                 `Namaste Admin, meri library (${currentLib?.name || "Library"}) ka account expired/deactivated hai.`
               )}`}
               target="_blank"
+              rel="noreferrer"
               className="w-full inline-block bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 px-6 rounded-xl transition text-sm"
             >
               Contact Support on WhatsApp
@@ -1030,14 +1239,23 @@ function LibraryView() {
   }
 
   return (
-    <div className="min-h-full bg-slate-50 text-slate-900">
-      <header className="sticky top-0 z-20 border-b border-slate-200/80 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 pb-24 md:pb-12 font-sans antialiased">
+      {/* Offline Alert Strip */}
+      {!isOnline && (
+        <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 text-xs font-bold py-1.5 px-4 text-center sticky top-0 z-50 shadow-sm flex items-center justify-center gap-2">
+          <span>⚡ Offline Mode:</span>
+          <span>Aap student data dekh sakte hain. Naya admission ya fees update karne ke liye internet connect karein.</span>
+        </div>
+      )}
+
+      {/* Modern Glassmorphic Sticky Header */}
+      <header className="sticky top-0 z-40 bg-white/85 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
           
-          {/* TAP/CLICKABLE LOGO (Direct Upload) */}
+          {/* Logo with Tap-to-Upload */}
           <div className="flex items-center gap-3">
-            <label 
-              title="Click logo to change"
+            <label
+              title="Click to change logo"
               className="relative cursor-pointer group flex items-center justify-center"
             >
               <img
@@ -1046,13 +1264,14 @@ function LibraryView() {
                 onError={(e) => {
                   (e.target as any).src = "/logo.png";
                 }}
-                className="h-12 w-12 rounded-2xl object-cover border border-slate-200 shadow-sm transition duration-200 group-hover:scale-105 group-hover:ring-2 group-hover:ring-blue-500"
+                className="h-11 w-11 rounded-2xl object-cover border border-slate-200 shadow-sm transition duration-200 group-hover:scale-105 group-hover:ring-2 group-hover:ring-indigo-500"
               />
-              <div className="absolute inset-0 bg-black/40 rounded-2xl opacity-0 group-hover:opacity-100 flex items-center justify-center transition text-white text-xs font-bold">
+              <div className="absolute inset-0 bg-black/40 rounded-2xl opacity-0 group-hover:opacity-100 flex items-center justify-center transition text-white text-[10px] font-bold">
                 ✏️
               </div>
               <input
                 type="file"
+                ref={fileInputRef}
                 accept="image/*"
                 onChange={handleLogoUpload}
                 disabled={uploadingLogo}
@@ -1062,388 +1281,503 @@ function LibraryView() {
 
             <div>
               <div className="flex items-center gap-2">
-                <p className="text-lg font-bold tracking-tight text-slate-900">
+                <p className="text-base sm:text-lg font-black tracking-tight text-slate-950 leading-tight">
                   {currentLib?.name || "LIBRARY MANAGEMENT"}
                 </p>
-                <span className="text-[10px] font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full uppercase tracking-wider">
+                <span className="hidden sm:inline-block text-[10px] font-extrabold bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-2 py-0.5 rounded-full uppercase tracking-wider shadow-xs">
                   Pro App
                 </span>
               </div>
-              <p className="text-xs text-slate-500">
-                Branch Head: {currentLib?.owner_name || "Manager"}
-                {uploadingLogo && <span className="ml-2 text-blue-600 font-semibold animate-pulse">(Updating Logo...)</span>}
+              <p className="text-xs text-slate-500 font-medium">
+                Head: {currentLib?.owner_name || "Manager"}
+                {uploadingLogo && <span className="ml-2 text-indigo-600 font-bold animate-pulse">(Updating Logo...)</span>}
               </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-2.5">
-            <button
-              type="button"
-              onClick={handleExportCSV}
-              className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold px-3 py-2 rounded-xl transition"
-            >
-              📥 Export CSV
-            </button>
-            <button
-              type="button"
-              onClick={handleLogout}
-              className="text-xs bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold px-3 py-2 rounded-xl transition"
-            >
-              Logout ↩
-            </button>
-            {activeTab === "students" ? (
-              <button
-                type="button"
-                onClick={() => handleOpenAdd("")}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-blue-600/25 transition hover:bg-blue-700"
-              >
-                <span className="text-lg leading-none">+</span>
-                Add Student
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => setShowInquiryModal(true)}
-                className="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm shadow-indigo-600/25 transition hover:bg-indigo-700"
-              >
-                <span className="text-lg leading-none">+</span>
-                New Inquiry
-              </button>
-            )}
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        {/* Navigation Tabs (Students vs Inquiries) */}
-        <div className="flex items-center justify-between border-b border-slate-200 pb-4 mb-6">
-          <div className="flex gap-2">
+          {/* Desktop Tab Switcher */}
+          <div className="hidden md:flex items-center gap-1.5 bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200/60">
             <button
               type="button"
               onClick={() => setActiveTab("students")}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition flex items-center gap-2 ${
+              className={`px-4 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
                 activeTab === "students"
-                  ? "bg-blue-600 text-white shadow-sm shadow-blue-600/20"
-                  : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                  ? "bg-white text-indigo-600 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
               }`}
             >
-              <span>🎓 Registered Students</span>
-              <span className="text-xs bg-white/20 px-2 py-0.5 rounded-full">{activeStudents.length}</span>
+              <span>🎓 Students</span>
+              <span className="text-[11px] bg-indigo-50 text-indigo-700 px-2 py-0.5 rounded-full font-extrabold">
+                {activeStudents.length}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("seats")}
+              className={`px-4 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                activeTab === "seats"
+                  ? "bg-white text-indigo-600 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <span>🪑 Seat Grid Map</span>
             </button>
             <button
               type="button"
               onClick={() => setActiveTab("inquiries")}
-              className={`px-4 py-2 rounded-xl text-sm font-bold transition flex items-center gap-2 ${
+              className={`px-4 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
                 activeTab === "inquiries"
-                  ? "bg-indigo-600 text-white shadow-sm shadow-indigo-600/20"
-                  : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                  ? "bg-white text-purple-600 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
               }`}
             >
-              <span>📋 New Inquiries / Leads</span>
-              <span className="text-xs bg-indigo-100 text-indigo-800 px-2 py-0.5 rounded-full font-bold">
+              <span>📋 Inquiries</span>
+              <span className="text-[11px] bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full font-extrabold">
                 {inquiries.length}
               </span>
             </button>
           </div>
 
-          {activeTab === "inquiries" && (
+          {/* Quick Header Actions */}
+          <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowBroadcastModal(true)}
-              className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3.5 py-2 rounded-xl shadow-sm flex items-center gap-1.5"
+              onClick={handleExportCSV}
+              title="Download CSV / Excel"
+              className="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold px-3 py-2 rounded-xl border border-slate-200 shadow-xs transition"
             >
-              <span>📢 Bulk WhatsApp Message</span>
+              📥 <span className="hidden sm:inline">Export</span>
             </button>
-          )}
+            <button
+              type="button"
+              onClick={handleLogout}
+              title="Logout"
+              className="text-xs bg-white hover:bg-rose-50 hover:text-rose-600 text-slate-700 font-bold px-3 py-2 rounded-xl border border-slate-200 shadow-xs transition"
+            >
+              🚪 <span className="hidden sm:inline">Logout</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleOpenAdd("")}
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-3.5 py-2 text-xs sm:text-sm font-bold text-white shadow-sm shadow-indigo-500/25 transition hover:from-indigo-700 hover:to-violet-700 active:scale-95"
+            >
+              <span className="text-base leading-none">+</span>
+              <span>Add Student</span>
+            </button>
+          </div>
         </div>
+      </header>
 
-        {/* TAB 1: REGISTERED STUDENTS VIEW */}
-        {activeTab === "students" && (
-          <>
-            <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-              <article className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-                <p className="text-sm font-medium text-slate-500">Total Enrolled</p>
-                <p className="mt-3 text-3xl font-semibold tracking-tight">{activeStudents.length}</p>
-                <p className="mt-2 text-xs text-slate-500">
-                  <span className="font-semibold text-slate-700">{bookedSeatNumbers.length}</span> Fixed ·{" "}
-                  <span className="font-semibold text-rose-700">{randomStudentsCount}</span> Floating/Random
-                </p>
-              </article>
+      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
+        {/* Metric Summary Cards */}
+        <section className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4 mb-6">
+          <article className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(79,70,229,0.08)]">
+            <div className="flex justify-between items-start">
+              <p className="text-xs font-bold text-indigo-950 uppercase tracking-wide">Total Enrolled</p>
+              <span className="p-2 rounded-xl bg-indigo-600 text-white text-xs shadow-sm">🎓</span>
+            </div>
+            <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-indigo-950">{activeStudents.length}</p>
+            <p className="mt-1.5 text-xs text-slate-600 font-medium">
+              <span className="font-extrabold text-slate-900">{bookedSeatNumbers.length}</span> Fixed ·{" "}
+              <span className="font-extrabold text-rose-600">{randomStudentsCount}</span> Floating
+            </p>
+          </article>
 
-              {/* VACANT SEATS CARD (Corrected Spelling) */}
-              <article
-                onClick={() => setShowVacantModal(true)}
-                className="rounded-2xl border border-blue-200 bg-gradient-to-br from-white to-blue-50 p-5 shadow-sm cursor-pointer hover:border-blue-400 transition"
-              >
-                <div className="flex justify-between items-start">
-                  <p className="text-sm font-medium text-blue-700">Vacant / Free Seats</p>
-                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full font-semibold">
-                    Manage
+          <article
+            onClick={() => setShowVacantModal(true)}
+            className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(16,185,129,0.08)] cursor-pointer hover:border-emerald-300 transition hover:-translate-y-0.5"
+          >
+            <div className="flex justify-between items-start">
+              <p className="text-xs font-bold text-emerald-950 uppercase tracking-wide">Vacant Seats</p>
+              <span className="text-[10px] bg-emerald-600 text-white px-2 py-0.5 rounded-full font-bold shadow-xs">
+                Manage
+              </span>
+            </div>
+            <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-emerald-900">
+              {vacantSeatList.length}
+            </p>
+            <p className="mt-1.5 text-xs text-emerald-700 font-semibold">Out of {allSeatNames.length} fixed seats</p>
+          </article>
+
+          <article className="rounded-2xl border border-amber-200/80 bg-gradient-to-br from-amber-50/80 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(245,158,11,0.1)]">
+            <div className="flex justify-between items-start">
+              <p className="text-xs font-bold text-amber-950 uppercase tracking-wide">Pending Fees</p>
+              <span className="p-2 rounded-xl bg-amber-500 text-white text-xs shadow-sm">⚡</span>
+            </div>
+            <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-amber-700">
+              {formatINR(dueTotalAmount)}
+            </p>
+            <p className="mt-1.5 text-xs font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full w-max border border-rose-200">
+              {dueToday.length + overdue.length} Students Due
+            </p>
+          </article>
+
+          <article className="rounded-2xl border border-purple-100 bg-gradient-to-br from-purple-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(168,85,247,0.08)]">
+            <div className="flex justify-between items-start">
+              <p className="text-xs font-bold text-purple-950 uppercase tracking-wide">Revenue This Month</p>
+              <span className="p-2 rounded-xl bg-purple-600 text-white text-xs shadow-sm">₹</span>
+            </div>
+            <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-purple-950">
+              {formatINR(monthRevenue)}
+            </p>
+            <p className="mt-1.5 text-xs text-purple-700 font-bold bg-purple-50 px-2 py-0.5 rounded-full w-max border border-purple-200">
+              {paid.length} Paid Students
+            </p>
+          </article>
+        </section>
+
+        {/* TAB 1: INTERACTIVE VISUAL SEAT GRID */}
+        {activeTab === "seats" && (
+          <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm mb-8">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-100">
+              <div>
+                <h2 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                  <span>Interactive Graphical Seat Map</span>
+                  <span className="text-xs bg-slate-100 text-slate-700 px-2 py-0.5 rounded-full font-bold">
+                    {allSeatNames.length} Total Configured
                   </span>
-                </div>
-                <p className="mt-3 text-3xl font-semibold tracking-tight text-blue-800">
-                  {vacantSeatList.length}
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Green seat par tap karke instant admission dein. Red/Yellow par tap karke student details dekhein.
                 </p>
-                <p className="mt-2 text-xs text-blue-600/80">Out of {allSeatNames.length} fixed seats (Cloud synced)</p>
-              </article>
+              </div>
 
-              <article className="rounded-2xl border border-orange-100 bg-gradient-to-br from-white to-orange-50 p-5 shadow-sm">
-                <p className="text-sm font-medium text-orange-700">Fees Due / Overdue</p>
-                <p className="mt-3 text-3xl font-semibold tracking-tight text-orange-800">
-                  {formatINR(dueTotalAmount)}
-                </p>
-                <p className="mt-2 text-xs text-orange-700/80">{dueToday.length + overdue.length} Students Pending</p>
-              </article>
+              {/* Shift Switcher */}
+              <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
+                {(["All", "Morning", "Evening", "Full Day"] as const).map((sh) => (
+                  <button
+                    key={sh}
+                    onClick={() => setSeatShiftView(sh)}
+                    className={`text-xs px-3.5 py-1.5 rounded-lg font-bold transition-all ${
+                      seatShiftView === sh
+                        ? "bg-white text-indigo-600 shadow-sm"
+                        : "text-slate-600 hover:text-slate-900"
+                    }`}
+                  >
+                    {sh}
+                  </button>
+                ))}
+              </div>
+            </div>
 
-              <article className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-white to-emerald-50 p-5 shadow-sm">
-                <p className="text-sm font-medium text-emerald-700">Total Revenue This Month</p>
-                <p className="mt-3 text-3xl font-semibold tracking-tight text-emerald-800">
-                  {formatINR(monthRevenue)}
-                </p>
-                <p className="mt-2 text-xs text-emerald-700/80">{paid.length} Paid Students</p>
-              </article>
-            </section>
+            {/* Grid Legend */}
+            <div className="flex items-center gap-4 py-3 text-xs text-slate-600 font-semibold border-b border-slate-100 mb-5">
+              <div className="flex items-center gap-1.5">
+                <span className="w-3.5 h-3.5 rounded bg-emerald-500 shadow-sm"></span>
+                <span>Vacant</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3.5 h-3.5 rounded bg-rose-500 shadow-sm"></span>
+                <span>Occupied (Paid)</span>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <span className="w-3.5 h-3.5 rounded bg-amber-500 shadow-sm"></span>
+                <span>Fee Due / Overdue</span>
+              </div>
+            </div>
 
-            <section className="mt-6 rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <div className="flex flex-col gap-4 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-                <div className="flex flex-wrap gap-2">
-                  {filters.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => setFilter(item.id)}
-                      className={`rounded-full px-3.5 py-1.5 text-sm font-medium transition ${
-                        filter === item.id
-                          ? "bg-slate-900 text-white"
-                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+            {/* Grid Cells */}
+            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2.5 max-h-[600px] overflow-y-auto p-1">
+              {allSeatNames.map((seatNum) => {
+                const occupant = seatGridOccupantMap.get(seatNum.toUpperCase());
+
+                if (occupant) {
+                  const isDue = occupant.status === "Due Today" || occupant.status === "Overdue";
+                  return (
+                    <div
+                      key={seatNum}
+                      onClick={() => {
+                        setQuery(occupant.name);
+                        setActiveTab("students");
+                      }}
+                      className={`cursor-pointer p-2.5 rounded-2xl border text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${
+                        isDue
+                          ? "bg-amber-50 border-amber-300 text-amber-950"
+                          : "bg-rose-50 border-rose-200 text-rose-950"
                       }`}
+                      title={`${occupant.name} (${occupant.phone}) - Due: ${occupant.dueDate}`}
                     >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-                <input
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Search name, seat, or phone"
-                  className="w-full sm:max-w-xs rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none ring-blue-500/30 focus:bg-white focus:ring-2"
-                />
-              </div>
+                      <span className="text-[10px] block font-mono font-black opacity-80">#{seatNum}</span>
+                      <p className="text-xs font-extrabold truncate mt-0.5">{occupant.name}</p>
+                      <span
+                        className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold mt-1 inline-block ${
+                          isDue ? "bg-amber-200 text-amber-900" : "bg-rose-200 text-rose-900"
+                        }`}
+                      >
+                        {occupant.status}
+                      </span>
+                    </div>
+                  );
+                }
 
-              <div className="overflow-x-auto">
-                <table className="min-w-[1240px] w-full text-left text-sm">
-                  <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
-                    <tr>
-                      <th className="px-5 py-3 font-medium">Seat No</th>
-                      <th className="px-5 py-3 font-medium">Student Name</th>
-                      <th className="px-5 py-3 font-medium">Phone & Contact</th>
-                      <th className="px-5 py-3 font-medium">Shift</th>
-                      <th className="px-5 py-3 font-medium">Monthly Fee</th>
-                      <th className="px-5 py-3 font-medium">Joining Date</th>
-                      <th className="px-5 py-3 font-medium">Valid Until (Next Due)</th>
-                      <th className="px-5 py-3 font-medium">Pending Dues</th>
-                      <th className="px-5 py-3 font-medium">Status</th>
-                      <th className="px-5 py-3 font-medium text-center">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {loading ? (
-                      <tr>
-                        <td colSpan={10} className="px-5 py-10 text-center text-sm text-slate-400">Loading data...</td>
-                      </tr>
-                    ) : filtered.length === 0 ? (
-                      <tr>
-                        <td colSpan={10} className="px-5 py-10 text-center text-sm text-slate-500">Koi student nahi mila.</td>
-                      </tr>
-                    ) : (
-                      filtered.map((student) => (
-                        <tr key={student.id} className="hover:bg-slate-50/80 transition">
-                          <td className="px-5 py-3">
-                            <span
-                              className={`inline-flex min-w-[3.25rem] items-center justify-center rounded-lg px-2.5 py-1 text-xs font-semibold ${
-                                student.status === "Left"
-                                  ? "bg-slate-200 text-slate-600"
-                                  : student.shift === "Random"
-                                    ? "bg-rose-100 text-rose-800 border border-rose-200"
-                                    : "bg-slate-900 text-white"
-                              }`}
-                            >
-                              {student.seatNo}
-                            </span>
-                          </td>
-                          <td className="px-5 py-3 font-medium text-slate-900">{student.name}</td>
-                          <td className="px-5 py-3 tabular-nums text-slate-600">
-                            <div className="flex items-center gap-2">
-                              <span>{student.phone}</span>
-                              <a
-                                href={`tel:${student.phone}`}
-                                title="Call Student"
-                                className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-blue-50 text-blue-600 hover:bg-blue-100 border border-blue-200 text-xs font-bold"
-                              >
-                                📞
-                              </a>
-                            </div>
-                          </td>
-                          <td className="px-5 py-3">
-                            <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${shiftBadge(student.shift)}`}>
-                              {student.shift}
-                            </span>
-                          </td>
-                          <td className="px-5 py-3 font-medium">{formatINR(student.monthlyFee)}</td>
-                          <td className="px-5 py-3 text-slate-600 text-xs">{formatDate(student.joiningDate)}</td>
-                          <td className="px-5 py-3 text-xs">
-                            {student.lastPaidDate ? (
-                              <div>
-                                <span className="font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md inline-block">
-                                  {formatDate(student.lastPaidDate)}
-                                </span>
-                                <span className="block text-[10px] text-slate-400 mt-0.5">
-                                  Mode: {student.lastPaymentMode || "Cash"}
-                                </span>
-                              </div>
-                            ) : (
-                              <span className="text-slate-400 italic">Never / New</span>
-                            )}
-                          </td>
-                          <td className="px-5 py-3">
-                            {student.status === "Left" ? (
-                              <span className="text-slate-400 text-xs">Vacated</span>
-                            ) : student.status === "Paid" ? (
-                              <span className="text-emerald-600 text-xs font-semibold">All Clear</span>
-                            ) : (
-                              <div>
-                                <span className="text-sm font-semibold text-rose-700">
-                                  {formatINR(student.monthlyFee * Math.max(1, student.pendingMonths))}
-                                </span>
-                                {student.pendingMonths > 1 && (
-                                  <span className="block text-[11px] text-rose-600 font-medium">
-                                    ({student.pendingMonths} Months Overdue)
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                          </td>
-                          <td className="px-5 py-3">
-                            <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${statusBadge(student.status)}`}>
-                              {student.status}
-                            </span>
-                          </td>
-                          <td className="px-5 py-3 text-center">
-                            <div className="flex items-center justify-center gap-1.5">
-                              {student.status !== "Left" && (
-                                <>
-                                  <button
-                                    type="button"
-                                    title="Send WhatsApp Reminder"
-                                    onClick={() => openWhatsApp(student)}
-                                    className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700"
-                                  >
-                                    WA
-                                  </button>
-                                  {student.status !== "Paid" && (
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenCollect(student)}
-                                      className="rounded-lg border border-emerald-300 bg-emerald-50 px-2 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100"
-                                    >
-                                      Collect Fee
-                                    </button>
-                                  )}
-                                </>
-                              )}
-                              <button
-                                type="button"
-                                title="View Payment History"
-                                onClick={() => handleOpenHistory(student)}
-                                className="rounded-lg border border-slate-300 bg-slate-50 px-2 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                              >
-                                📜 History
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => handleOpenEdit(student)}
-                                className="rounded-lg border border-blue-200 bg-blue-50 px-2 py-1.5 text-xs font-semibold text-blue-700 hover:bg-blue-100"
-                              >
-                                Edit
-                              </button>
-                              {student.status !== "Left" ? (
-                                <button
-                                  type="button"
-                                  title="Mark Left / Vacate Seat"
-                                  onClick={() => handleMarkLeft(student)}
-                                  className="rounded-lg border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100"
-                                >
-                                  Vacate
-                                </button>
-                              ) : (
-                                <button
-                                  type="button"
-                                  title="Delete Permanently"
-                                  onClick={() => handleDelete(student.id, student.name)}
-                                  className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs font-semibold text-red-600 hover:bg-red-100"
-                                >
-                                  ✕
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          </>
+                return (
+                  <button
+                    key={seatNum}
+                    type="button"
+                    onClick={() => handleOpenAdd(seatNum)}
+                    className="p-2.5 rounded-2xl border-2 border-emerald-300/80 bg-emerald-50/60 hover:bg-emerald-500 hover:text-white hover:border-emerald-500 text-emerald-800 text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-sm active:scale-95 group"
+                  >
+                    <span className="text-[10px] block font-mono font-black text-emerald-600 group-hover:text-white">#{seatNum}</span>
+                    <span className="text-[11px] font-bold block mt-0.5 uppercase">+ Free</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         )}
 
-        {/* TAB 2: INQUIRIES VIEW */}
-        {activeTab === "inquiries" && (
-          <section className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-              <div>
-                <h3 className="font-bold text-slate-900">New Admission Leads & Inquiries</h3>
-                <p className="text-xs text-slate-500">Call, message or convert demo candidates into registered students.</p>
+        {/* TAB 2: REGISTERED STUDENTS VIEW */}
+        {activeTab === "students" && (
+          <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
+            <div className="flex flex-col gap-4 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+              <div className="flex flex-wrap gap-2">
+                {filters.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setFilter(item.id)}
+                    className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition ${
+                      filter === item.id
+                        ? "bg-slate-900 text-white shadow-sm"
+                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
               </div>
-              <button
-                type="button"
-                onClick={() => setShowInquiryModal(true)}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm"
-              >
-                + Add Inquiry
-              </button>
+              <input
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search name, seat, or phone..."
+                className="w-full sm:max-w-xs rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20"
+              />
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+              <table className="min-w-[1240px] w-full text-left text-xs">
+                <thead className="bg-slate-50/80 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200/70">
                   <tr>
-                    <th className="px-5 py-3 font-medium">Candidate Name</th>
-                    <th className="px-5 py-3 font-medium">Phone & Contact</th>
-                    <th className="px-5 py-3 font-medium">Interested Shift</th>
-                    <th className="px-5 py-3 font-medium">Notes / Requirement</th>
-                    <th className="px-5 py-3 font-medium">Inquiry Date</th>
-                    <th className="px-5 py-3 font-medium text-center">Actions</th>
+                    <th className="px-5 py-3.5 font-bold">Seat No</th>
+                    <th className="px-5 py-3.5 font-bold">Student Name</th>
+                    <th className="px-5 py-3.5 font-bold">Phone & Contact</th>
+                    <th className="px-5 py-3.5 font-bold">Shift</th>
+                    <th className="px-5 py-3.5 font-bold">Monthly Fee</th>
+                    <th className="px-5 py-3.5 font-bold">Joining Date</th>
+                    <th className="px-5 py-3.5 font-bold">Valid Until (Next Due)</th>
+                    <th className="px-5 py-3.5 font-bold">Pending Dues</th>
+                    <th className="px-5 py-3.5 font-bold">Status</th>
+                    <th className="px-5 py-3.5 font-bold text-center">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-100">
+                <tbody className="divide-y divide-slate-100 font-medium">
+                  {loading && students.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="px-5 py-10 text-center text-slate-400">Loading data...</td>
+                    </tr>
+                  ) : filtered.length === 0 ? (
+                    <tr>
+                      <td colSpan={10} className="px-5 py-10 text-center text-slate-500">Koi student nahi mila.</td>
+                    </tr>
+                  ) : (
+                    filtered.map((student) => (
+                      <tr key={student.id} className="hover:bg-slate-50/80 transition">
+                        <td className="px-5 py-3.5">
+                          <span
+                            className={`inline-flex min-w-[3.25rem] items-center justify-center rounded-lg px-2.5 py-1 font-mono font-black ${
+                              student.status === "Left"
+                                ? "bg-slate-200 text-slate-600"
+                                : student.shift === "Random"
+                                  ? "bg-rose-100 text-rose-800 border border-rose-200"
+                                  : "bg-slate-900 text-white"
+                            }`}
+                          >
+                            {student.seatNo}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3.5 font-bold text-slate-900">{student.name}</td>
+                        <td className="px-5 py-3.5 tabular-nums text-slate-600">
+                          <div className="flex items-center gap-2">
+                            <span className="font-semibold">{student.phone}</span>
+                            <a
+                              href={`tel:${student.phone}`}
+                              title="Call Student"
+                              className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-200 text-xs font-bold"
+                            >
+                              📞
+                            </a>
+                          </div>
+                        </td>
+                        <td className="px-5 py-3.5">
+                          <span className={`inline-flex rounded-md px-2.5 py-0.5 text-[10px] font-bold ${shiftBadge(student.shift)}`}>
+                            {student.shift}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3.5 font-extrabold text-slate-900">{formatINR(student.monthlyFee)}</td>
+                        <td className="px-5 py-3.5 text-slate-500">{formatDate(student.joiningDate)}</td>
+                        <td className="px-5 py-3.5">
+                          {student.lastPaidDate ? (
+                            <div>
+                              <span className="font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-md inline-block">
+                                {formatDate(student.lastPaidDate)}
+                              </span>
+                              <span className="block text-[10px] text-slate-400 mt-0.5 font-medium">
+                                Mode: {student.lastPaymentMode || "Cash"}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 italic">Never / New</span>
+                          )}
+                        </td>
+                        <td className="px-5 py-3.5">
+                          {student.status === "Left" ? (
+                            <span className="text-slate-400">Vacated</span>
+                          ) : student.status === "Paid" ? (
+                            <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                              All Clear
+                            </span>
+                          ) : (
+                            <div>
+                              <span className="font-black text-rose-700">
+                                {formatINR(student.monthlyFee * Math.max(1, student.pendingMonths))}
+                              </span>
+                              {student.pendingMonths > 1 && (
+                                <span className="block text-[10px] text-rose-600 font-bold">
+                                  ({student.pendingMonths} Months Overdue)
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-5 py-3.5">
+                          <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-bold ${statusBadge(student.status)}`}>
+                            {student.status}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3.5 text-center">
+                          <div className="flex items-center justify-center gap-1.5">
+                            {student.status !== "Left" && (
+                              <>
+                                <button
+                                  type="button"
+                                  title="Send WhatsApp Reminder"
+                                  onClick={() => openWhatsApp(student)}
+                                  className="rounded-lg bg-emerald-500 px-2.5 py-1 text-xs font-bold text-white hover:bg-emerald-600 transition shadow-xs"
+                                >
+                                  💬 WA
+                                </button>
+                                {student.status !== "Paid" && (
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenCollect(student)}
+                                    className="rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-indigo-700 transition shadow-xs"
+                                  >
+                                    Collect ₹
+                                  </button>
+                                )}
+                              </>
+                            )}
+                            <button
+                              type="button"
+                              title="View Payment History"
+                              onClick={() => handleOpenHistory(student)}
+                              className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100 transition"
+                            >
+                              📜 History
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEdit(student)}
+                              className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition"
+                            >
+                              Edit
+                            </button>
+                            {student.status !== "Left" ? (
+                              <button
+                                type="button"
+                                title="Mark Left / Vacate Seat"
+                                onClick={() => handleMarkLeft(student)}
+                                className="rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100 transition"
+                              >
+                                Vacate
+                              </button>
+                            ) : (
+                              <button
+                                type="button"
+                                title="Delete Permanently"
+                                onClick={() => handleDelete(student.id, student.name)}
+                                className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-bold text-red-600 hover:bg-red-100 transition"
+                              >
+                                ✕
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
+
+        {/* TAB 3: INQUIRIES VIEW */}
+        {activeTab === "inquiries" && (
+          <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
+            <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-3 sm:items-center justify-between bg-slate-50/70">
+              <div>
+                <h3 className="font-extrabold text-slate-900">New Admission Leads & Inquiries</h3>
+                <p className="text-xs text-slate-500">Call, message or convert demo candidates into registered students.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowBroadcastModal(true)}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-xs flex items-center gap-1.5 transition"
+                >
+                  <span>📢 Broadcast</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowInquiryModal(true)}
+                  className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-xs transition"
+                >
+                  + Add Inquiry
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-100">
+                  <tr>
+                    <th className="px-5 py-3 font-bold">Candidate Name</th>
+                    <th className="px-5 py-3 font-bold">Phone & Contact</th>
+                    <th className="px-5 py-3 font-bold">Interested Shift</th>
+                    <th className="px-5 py-3 font-bold">Notes / Requirement</th>
+                    <th className="px-5 py-3 font-bold">Inquiry Date</th>
+                    <th className="px-5 py-3 font-bold text-center">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium">
                   {inquiries.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-5 py-12 text-center text-slate-400 text-sm">
-                        Abhi tak koi inquiry entry nahi hai. "Add Inquiry" button se naye students jod sakte hain.
+                      <td colSpan={6} className="px-5 py-12 text-center text-slate-400">
+                        Abhi tak koi inquiry entry nahi hai. "+ Add Inquiry" se jod sakte hain.
                       </td>
                     </tr>
                   ) : (
                     inquiries.map((inq) => (
                       <tr key={inq.id} className="hover:bg-slate-50/70 transition">
-                        <td className="px-5 py-3 font-bold text-slate-900">{inq.name}</td>
-                        <td className="px-5 py-3">
+                        <td className="px-5 py-3.5 font-bold text-slate-900">{inq.name}</td>
+                        <td className="px-5 py-3.5">
                           <div className="flex items-center gap-2">
-                            <span className="font-mono text-slate-700">{inq.phone}</span>
+                            <span className="font-mono text-slate-700 font-bold">{inq.phone}</span>
                             <a
                               href={`tel:${inq.phone}`}
                               title="Direct Call"
-                              className="w-7 h-7 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-md flex items-center justify-center text-xs font-bold"
+                              className="w-6 h-6 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-md flex items-center justify-center text-xs font-bold"
                             >
                               📞
                             </a>
@@ -1452,33 +1786,34 @@ function LibraryView() {
                                 `Namaste ${inq.name}, thank you for contacting ${currentLib?.name || "our library"}. Would you like to schedule your trial slot today?`
                               )}`}
                               target="_blank"
+                              rel="noreferrer"
                               title="WhatsApp Chat"
-                              className="w-7 h-7 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-md flex items-center justify-center text-xs font-bold"
+                              className="w-6 h-6 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-md flex items-center justify-center text-xs font-bold"
                             >
-                              WA
+                              💬
                             </a>
                           </div>
                         </td>
-                        <td className="px-5 py-3">
-                          <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-semibold ${shiftBadge(inq.interested_shift)}`}>
+                        <td className="px-5 py-3.5">
+                          <span className={`inline-flex rounded-md px-2.5 py-0.5 text-[10px] font-bold ${shiftBadge(inq.interested_shift)}`}>
                             {inq.interested_shift}
                           </span>
                         </td>
-                        <td className="px-5 py-3 text-slate-600 text-xs">{inq.notes || "General Inquiry"}</td>
-                        <td className="px-5 py-3 text-slate-500 text-xs">{formatDate(inq.created_at)}</td>
-                        <td className="px-5 py-3 text-center">
+                        <td className="px-5 py-3.5 text-slate-600">{inq.notes || "General Inquiry"}</td>
+                        <td className="px-5 py-3.5 text-slate-500">{formatDate(inq.created_at)}</td>
+                        <td className="px-5 py-3.5 text-center">
                           <div className="flex items-center justify-center gap-2">
                             <button
                               type="button"
                               onClick={() => handleConvertInquiryToStudent(inq)}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs px-2.5 py-1 rounded-md shadow-xs"
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-2.5 py-1 rounded-md shadow-xs transition"
                             >
                               Confirm Admission 🎓
                             </button>
                             <button
                               type="button"
                               onClick={() => handleDeleteInquiry(inq.id)}
-                              className="text-red-500 hover:text-red-700 text-xs font-bold px-2 py-1"
+                              className="text-red-500 hover:text-red-700 font-bold px-2 py-1"
                             >
                               ✕
                             </button>
@@ -1494,9 +1829,50 @@ function LibraryView() {
         )}
       </main>
 
+      {/* MOBILE NATIVE BOTTOM BAR */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-6 py-2.5 flex justify-between items-center shadow-lg">
+        <button
+          onClick={() => setActiveTab("students")}
+          className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
+            activeTab === "students" ? "text-indigo-600" : "text-slate-400"
+          }`}
+        >
+          <span className="text-base">🎓</span>
+          <span>Students</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("seats")}
+          className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
+            activeTab === "seats" ? "text-indigo-600" : "text-slate-400"
+          }`}
+        >
+          <span className="text-base">🪑</span>
+          <span>Seat Map</span>
+        </button>
+
+        <button
+          onClick={() => setActiveTab("inquiries")}
+          className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
+            activeTab === "inquiries" ? "text-purple-600" : "text-slate-400"
+          }`}
+        >
+          <span className="text-base">📋</span>
+          <span>Leads</span>
+        </button>
+
+        <button
+          onClick={() => setShowVacantModal(true)}
+          className="flex flex-col items-center gap-0.5 text-[10px] font-bold text-slate-400"
+        >
+          <span className="text-base">⚙️</span>
+          <span>Config</span>
+        </button>
+      </nav>
+
       {/* MODAL: ADD INQUIRY */}
       {showInquiryModal && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={handleAddInquiry} className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl space-y-3">
             <h3 className="text-base font-bold text-slate-900">Add New Admission Lead</h3>
             <input
@@ -1504,21 +1880,21 @@ function LibraryView() {
               placeholder="Candidate Name"
               value={inquiryForm.name}
               onChange={(e) => setInquiryForm({ ...inquiryForm, name: e.target.value })}
-              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs"
             />
             <input
               required
               placeholder="Phone (10 digits)"
               value={inquiryForm.phone}
               onChange={(e) => setInquiryForm({ ...inquiryForm, phone: e.target.value })}
-              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs"
             />
             <div>
               <label className="text-xs font-semibold text-slate-500 mb-1 block">Interested Shift:</label>
               <select
                 value={inquiryForm.shift}
                 onChange={(e) => setInquiryForm({ ...inquiryForm, shift: e.target.value as Shift })}
-                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold"
               >
                 <option value="Morning">Morning</option>
                 <option value="Evening">Evening</option>
@@ -1530,19 +1906,19 @@ function LibraryView() {
               placeholder="Notes (e.g. Demanded Seat 12, Looking for demo slot)"
               value={inquiryForm.notes}
               onChange={(e) => setInquiryForm({ ...inquiryForm, notes: e.target.value })}
-              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm h-20"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs h-20"
             />
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setShowInquiryModal(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600"
+                className="px-4 py-2 text-xs font-bold text-slate-600"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-4 py-2 rounded-xl"
+                className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-4 py-2 rounded-xl"
               >
                 Save Inquiry
               </button>
@@ -1553,7 +1929,7 @@ function LibraryView() {
 
       {/* MODAL: BULK WHATSAPP BROADCAST */}
       {showBroadcastModal && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl space-y-4">
             <h3 className="text-base font-bold text-slate-900">Broadcast WhatsApp Message</h3>
             <p className="text-xs text-slate-500">
@@ -1562,13 +1938,13 @@ function LibraryView() {
             <textarea
               value={broadcastMessage}
               onChange={(e) => setBroadcastMessage(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 p-3 text-xs h-28"
+              className="w-full rounded-xl border border-slate-200 p-3 text-xs h-28 font-medium"
             />
             <div className="flex justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setShowBroadcastModal(false)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600"
+                className="px-4 py-2 text-xs font-bold text-slate-600"
               >
                 Cancel
               </button>
@@ -1584,20 +1960,47 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL 1: ADD / EDIT STUDENT */}
+      {/* MODAL: ADD / EDIT STUDENT */}
       {showModal && (
-        <div className="fixed inset-0 z-30 flex items-end justify-center bg-slate-900/40 p-4 sm:items-center">
-          <form onSubmit={handleSaveStudent} className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl">
-            <h2 className="text-lg font-semibold">{editingId ? "Edit Student Details" : "Add New Student"}</h2>
-            {formError && <div className="mt-2 text-xs text-red-600 font-medium">⚠️ {formError}</div>}
-            <div className="mt-4 grid gap-3">
+        <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-4 sm:items-center backdrop-blur-xs">
+          <form onSubmit={handleSaveStudent} className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl space-y-3">
+            <div className="flex justify-between items-center">
+              <h2 className="text-base font-bold text-slate-900">
+                {editingId ? "Edit Student Details" : rejoiningStudent ? "Re-Admit Old Student 🔄" : "Add New Student"}
+              </h2>
+              <button 
+                type="button" 
+                onClick={() => setShowModal(false)} 
+                className="text-slate-400 hover:text-slate-600 text-xs font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Re-Admission Badge */}
+            {rejoiningStudent && (
+              <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] p-2.5 rounded-xl flex items-center justify-between font-medium">
+                <span>✨ <strong>Old Student Recognized:</strong> {rejoiningStudent.name} (Purani payment history linked rahegi)</span>
+                <button 
+                  type="button" 
+                  onClick={() => setRejoiningStudent(null)} 
+                  className="text-emerald-950 font-bold ml-2 text-xs"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {formError && <div className="text-xs text-red-600 font-bold bg-red-50 p-2 rounded-lg border border-red-200">⚠️ {formError}</div>}
+            
+            <div className="grid gap-3">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs font-semibold text-slate-500 mb-1 block">Shift:</label>
                   <select
                     value={form.shift}
                     onChange={(e) => setForm({ ...form, shift: e.target.value as Shift })}
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-medium"
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold bg-white"
                   >
                     <option value="Morning">Morning</option>
                     <option value="Evening">Evening</option>
@@ -1614,7 +2017,7 @@ function LibraryView() {
                     placeholder={form.shift === "Random" ? "Floating Seat" : "e.g. A01, B12"}
                     value={form.seatNo}
                     onChange={(e) => setForm({ ...form, seatNo: e.target.value })}
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none"
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold outline-none bg-white"
                   />
                 </div>
               </div>
@@ -1625,77 +2028,107 @@ function LibraryView() {
                 </p>
               )}
 
-              <input
-                required
-                placeholder="Student Name"
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none"
-              />
-              <input
-                required
-                placeholder="Phone (10 digits)"
-                value={form.phone}
-                onChange={(e) => setForm({ ...form, phone: e.target.value })}
-                className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none"
-              />
               <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1 block">Monthly Fee (₹):</label>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Student Full Name:</label>
                 <input
                   required
-                  type="number"
-                  placeholder="Monthly Fee (₹)"
-                  value={form.monthlyFee}
-                  onChange={(e) => setForm({ ...form, monthlyFee: e.target.value })}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  placeholder="Student Name"
+                  value={form.name}
+                  onChange={(e) => setForm({ ...form, name: e.target.value })}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs outline-none bg-white font-medium"
                 />
               </div>
+
               <div>
-                <label className="text-xs font-semibold text-slate-500 mb-1 block">Joining Date (Fee Cycle):</label>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Phone / WhatsApp Number:</label>
                 <input
                   required
-                  type="date"
-                  value={form.joiningDate}
-                  onChange={(e) => setForm({ ...form, joiningDate: e.target.value })}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm"
+                  placeholder="10 Digits Mobile Number"
+                  value={form.phone}
+                  onChange={(e) => handlePhoneChange(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs outline-none bg-white font-mono font-medium"
                 />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 mb-1 block">Monthly Fee (₹):</label>
+                  <input
+                    required
+                    type="number"
+                    placeholder="Monthly Fee (₹)"
+                    value={form.monthlyFee}
+                    onChange={(e) => setForm({ ...form, monthlyFee: e.target.value })}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs bg-white font-bold"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-500 mb-1 block">Joining Date:</label>
+                  <input
+                    required
+                    type="date"
+                    value={form.joiningDate}
+                    onChange={(e) => setForm({ ...form, joiningDate: e.target.value })}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs bg-white font-bold"
+                  />
+                </div>
               </div>
             </div>
-            <div className="mt-5 flex justify-end gap-2">
+
+            <div className="mt-4 flex justify-end gap-2 pt-2">
               <button
                 type="button"
                 onClick={() => setShowModal(false)}
-                className="rounded-xl px-4 py-2 text-sm text-slate-600"
+                className="rounded-xl px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100"
               >
                 Cancel
               </button>
               <button
                 type="submit"
-                className="rounded-xl bg-blue-600 px-4 py-2 text-sm font-semibold text-white"
+                disabled={savingStudent}
+                className={`rounded-xl px-4 py-2 text-xs font-bold text-white shadow-sm transition ${
+                  savingStudent
+                    ? "bg-slate-400 cursor-not-allowed"
+                    : "bg-indigo-600 hover:bg-indigo-700 active:scale-95"
+                }`}
               >
-                Save Student
+                {savingStudent ? "Saving Student..." : rejoiningStudent ? "Re-Admit Student 🔄" : "Save Student"}
               </button>
             </div>
           </form>
         </div>
       )}
 
-      {/* MODAL 2: MULTI-MONTH FEE COLLECTION */}
+      {/* MODAL: MULTI-MONTH FEE COLLECTION WITH CUSTOM PAYMENT DATE */}
       {collectStudent && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={submitCollectFee} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
-            <h3 className="text-lg font-bold text-slate-900">Collect Student Fee</h3>
+            <h3 className="text-base font-bold text-slate-900">Collect Student Fee</h3>
             <p className="text-xs text-slate-500 mt-1">
               Student: <strong className="text-slate-800">{collectStudent.name}</strong> ({collectStudent.shift === "Random" ? "Floating Seat" : `Seat ${collectStudent.seatNo}`})
             </p>
 
             <div className="mt-4 space-y-3.5">
+              {/* 🟢 CUSTOM PAYMENT DATE PICKER */}
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Select Months to Collect:</label>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-slate-700">Payment Date Received:</label>
+                  <span className="text-[10px] text-indigo-600 font-semibold">(Auto today)</span>
+                </div>
+                <input
+                  type="date"
+                  value={collectCustomDate}
+                  onChange={(e) => setCollectCustomDate(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 p-2 text-xs font-bold bg-slate-50 text-slate-900 outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">Select Duration (Months):</label>
                 <select
                   value={collectMonths}
                   onChange={(e) => setCollectMonths(Number(e.target.value))}
-                  className="w-full rounded-xl border border-slate-200 p-2 text-sm font-medium bg-slate-50"
+                  className="w-full rounded-xl border border-slate-200 p-2 text-xs font-bold bg-slate-50 text-slate-900"
                 >
                   <option value={1}>1 Month (Current Due)</option>
                   <option value={2}>2 Months</option>
@@ -1707,7 +2140,7 @@ function LibraryView() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Payment Mode:</label>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">Payment Mode:</label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
@@ -1725,7 +2158,7 @@ function LibraryView() {
                     onClick={() => setPaymentMode("UPI/Online")}
                     className={`py-2 text-xs font-bold rounded-xl border transition ${
                       paymentMode === "UPI/Online"
-                        ? "bg-blue-600 text-white border-blue-600"
+                        ? "bg-indigo-600 text-white border-indigo-600"
                         : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50"
                     }`}
                   >
@@ -1735,8 +2168,8 @@ function LibraryView() {
               </div>
 
               <div className="rounded-xl bg-slate-50 p-3.5 border border-slate-100 flex justify-between items-center">
-                <span className="text-xs text-slate-600 font-medium">Total Amount Receiving:</span>
-                <span className="text-lg font-bold text-emerald-700">
+                <span className="text-xs text-slate-600 font-bold">Total Amount Receiving:</span>
+                <span className="text-base font-black text-emerald-700">
                   {formatINR(collectStudent.monthlyFee * collectMonths)}
                 </span>
               </div>
@@ -1746,7 +2179,7 @@ function LibraryView() {
               <button
                 type="button"
                 onClick={() => setCollectStudent(null)}
-                className="rounded-xl px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100"
+                className="rounded-xl px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100"
               >
                 Cancel
               </button>
@@ -1761,16 +2194,16 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL 3: VACANT SEATS OVERVIEW (Corrected Spelling) */}
+      {/* MODAL: VACANT SEATS & SEAT CAPACITY CONFIG */}
       {showVacantModal && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <div>
-                <h3 className="text-lg font-bold text-slate-900">Seat Capacity & Vacant Seats</h3>
+                <h3 className="text-base font-bold text-slate-900">Seat Capacity & Vacant Seats</h3>
                 <p className="text-xs text-slate-500">Synced directly with Supabase Database</p>
               </div>
-              <button onClick={() => setShowVacantModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+              <button onClick={() => setShowVacantModal(false)} className="text-slate-400 hover:text-slate-600 font-bold">✕</button>
             </div>
 
             <div className="mt-4 space-y-4">
@@ -1784,12 +2217,12 @@ function LibraryView() {
                     value={seatConfigInput}
                     onChange={(e) => setSeatConfigInput(e.target.value)}
                     placeholder="A1-A10, B1-B10"
-                    className="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs bg-white"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-1.5 text-xs bg-white font-mono font-medium"
                   />
                   <button
                     type="button"
                     onClick={handleSaveSeatConfiguration}
-                    className="bg-blue-600 text-white px-3.5 py-1.5 rounded-lg text-xs font-semibold hover:bg-blue-700"
+                    className="bg-indigo-600 text-white px-3.5 py-1.5 rounded-lg text-xs font-bold hover:bg-indigo-700"
                   >
                     Save to DB
                   </button>
@@ -1798,7 +2231,7 @@ function LibraryView() {
 
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs font-semibold text-slate-600">Check Available Seats In Shift:</span>
+                  <span className="text-xs font-bold text-slate-600">Check Available Seats In Shift:</span>
                   <span className="text-xs font-bold text-emerald-700">
                     {vacantSeatList.length} Seats Available
                   </span>
@@ -1809,7 +2242,7 @@ function LibraryView() {
                       key={shift}
                       type="button"
                       onClick={() => setVacantShiftFilter(shift)}
-                      className={`text-xs px-3 py-1 rounded-lg font-medium transition ${
+                      className={`text-xs px-3 py-1 rounded-lg font-bold transition ${
                         vacantShiftFilter === shift
                           ? "bg-slate-900 text-white"
                           : "bg-slate-100 text-slate-600 hover:bg-slate-200"
@@ -1822,7 +2255,7 @@ function LibraryView() {
               </div>
 
               <div>
-                <p className="text-[11px] text-slate-400 mb-1.5">
+                <p className="text-[11px] text-slate-400 mb-1.5 font-medium">
                   Click on any green seat to allocate student immediately:
                 </p>
                 <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto p-3 bg-emerald-50/40 rounded-xl border border-emerald-100">
@@ -1837,7 +2270,7 @@ function LibraryView() {
                           setShowVacantModal(false);
                           handleOpenAdd(seat);
                         }}
-                        className="bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 text-emerald-900 text-xs px-2.5 py-1 rounded-lg font-bold transition shadow-xs"
+                        className="bg-emerald-100 hover:bg-emerald-200 border border-emerald-300 text-emerald-900 text-xs px-2.5 py-1 rounded-lg font-black transition shadow-xs"
                       >
                         {seat} +
                       </button>
@@ -1851,7 +2284,7 @@ function LibraryView() {
               <button
                 type="button"
                 onClick={() => setShowVacantModal(false)}
-                className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+                className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200"
               >
                 Close
               </button>
@@ -1860,18 +2293,18 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL 4: PAYMENT HISTORY */}
+      {/* MODAL: PAYMENT HISTORY */}
       {historyStudent && (
-        <div className="fixed inset-0 z-30 flex items-center justify-center bg-slate-900/50 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <div>
-                <h3 className="text-lg font-bold text-slate-900">Payment History</h3>
+                <h3 className="text-base font-bold text-slate-900">Payment History</h3>
                 <p className="text-xs text-slate-500">
                   Student: <strong className="text-slate-800">{historyStudent.name}</strong> ({historyStudent.shift === "Random" ? "Floating Seat" : `Seat ${historyStudent.seatNo}`})
                 </p>
               </div>
-              <button onClick={() => setHistoryStudent(null)} className="text-slate-400 hover:text-slate-600">✕</button>
+              <button onClick={() => setHistoryStudent(null)} className="text-slate-400 hover:text-slate-600 font-bold">✕</button>
             </div>
 
             <div className="mt-4 max-h-72 overflow-y-auto">
@@ -1888,16 +2321,16 @@ function LibraryView() {
                     >
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="text-sm font-bold text-slate-900">{formatINR(item.amount_paid)}</span>
-                          <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700">
+                          <span className="text-sm font-black text-slate-900">{formatINR(item.amount_paid)}</span>
+                          <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-white border border-slate-200 text-slate-700">
                             {item.payment_mode}
                           </span>
                         </div>
-                        <p className="text-xs text-slate-500 mt-1">
+                        <p className="text-xs text-slate-500 mt-1 font-medium">
                           Date: {formatDate(item.payment_date)} · {item.months_count} Month(s) Fee
                         </p>
                       </div>
-                      <span className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-md">
+                      <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-md">
                         Paid
                       </span>
                     </div>
@@ -1910,7 +2343,7 @@ function LibraryView() {
               <button
                 type="button"
                 onClick={() => setHistoryStudent(null)}
-                className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-200"
+                className="rounded-xl bg-slate-100 px-4 py-2 text-xs font-bold text-slate-700 hover:bg-slate-200"
               >
                 Close
               </button>
@@ -1919,15 +2352,15 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL 5: PAYMENT SUCCESS & RECEIPT POPUP */}
+      {/* MODAL: PAYMENT SUCCESS & RECEIPT POPUP */}
       {paymentSuccessData && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/60 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
           <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl text-center space-y-4">
-            <div className="w-14 h-14 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center text-2xl mx-auto">
+            <div className="w-14 h-14 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center text-2xl mx-auto font-bold">
               ✓
             </div>
             <div>
-              <h3 className="text-lg font-bold text-slate-900">Payment Successful!</h3>
+              <h3 className="text-base font-bold text-slate-900">Payment Successful!</h3>
               <p className="text-xs text-slate-500 mt-1">
                 {paymentSuccessData.student.name} ki {formatINR(paymentSuccessData.amount)} fees jama ho gayi hai ({paymentSuccessData.mode}).
               </p>
@@ -1938,7 +2371,7 @@ function LibraryView() {
                 href={paymentSuccessData.waUrl}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-1.5"
+                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-1.5"
               >
                 <span>📲 Open WhatsApp Chat</span>
               </a>
@@ -1952,10 +2385,11 @@ function LibraryView() {
                     paymentSuccessData.student,
                     paymentSuccessData.amount,
                     paymentSuccessData.months,
-                    paymentSuccessData.mode
+                    paymentSuccessData.mode,
+                    paymentSuccessData.paymentDate
                   );
                 }}
-                className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold py-2 px-4 rounded-xl text-xs"
+                className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-2 px-4 rounded-xl text-xs"
               >
                 📥 Download PDF Again
               </button>
@@ -1964,7 +2398,7 @@ function LibraryView() {
             <button
               type="button"
               onClick={() => setPaymentSuccessData(null)}
-              className="text-xs text-slate-400 hover:text-slate-600 pt-1"
+              className="text-xs text-slate-400 hover:text-slate-600 pt-1 font-semibold"
             >
               Done & Close
             </button>
@@ -1973,7 +2407,7 @@ function LibraryView() {
       )}
 
       {toast && (
-        <div className="fixed bottom-5 right-5 z-40 rounded-xl bg-slate-900 px-4 py-2.5 text-sm text-white shadow-lg">
+        <div className="fixed bottom-5 right-5 z-50 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-bold text-white shadow-lg">
           {toast}
         </div>
       )}
@@ -1983,7 +2417,7 @@ function LibraryView() {
 
 export default function Page() {
   return (
-    <Suspense fallback={<div className="p-8 text-center text-slate-500">Loading library...</div>}>
+    <Suspense fallback={<div className="p-8 text-center text-slate-500 text-xs">Loading library...</div>}>
       <LibraryView />
     </Suspense>
   );
