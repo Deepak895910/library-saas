@@ -395,31 +395,100 @@ function LibraryView() {
     return true;
   };
 
+  // 🚪 1. LOGOUT HANDLER (SIRF IS BUTTON SE HI LOGIN SCREEN KHULEGI)
   const handleLogout = () => {
+    if (!confirm("Kya aap sach me logout karna chahte hain?")) return;
     if (typeof window !== "undefined") {
-      sessionStorage.removeItem("active_library_id");
       localStorage.removeItem("active_library_id");
+      localStorage.removeItem("auth_token");
+      sessionStorage.clear();
+      document.cookie = "active_library_id=; path=/; max-age=0;";
     }
     router.replace("/");
   };
 
-  // 🟢 ANTI-LOGOUT ON BROWSER BACK NAVIGATION FIX
+  // 🔐 2. STRICT AUTH GUARD (UNAUTHORIZED DIRECT LINK BLOCKER)
   useEffect(() => {
-    const activeId = libId || (typeof window !== "undefined" ? localStorage.getItem("active_library_id") : null);
+    if (typeof window === "undefined") return;
 
-    if (!activeId) {
+    const savedId = localStorage.getItem("active_library_id");
+    const authToken = localStorage.getItem("auth_token");
+
+    // Agar device mein valid login token nahi hai (kisi ne direct link forward kiya ho)
+    if (!savedId || !authToken || authToken !== `auth_verified_${savedId}`) {
+      localStorage.removeItem("active_library_id");
+      localStorage.removeItem("auth_token");
       router.replace("/");
       return;
     }
 
-    if (!libId && activeId) {
-      router.replace(`/library?id=${activeId}`);
+    // Agar link me dusri library ID ho jo logged in library se match na kare
+    if (libId && libId !== savedId) {
+      router.replace(`/library?id=${savedId}`);
       return;
     }
 
-    localStorage.setItem("active_library_id", activeId);
+    // Back aane par agar URL se ?id= hat jaye toh turant restore karein
+    if (!libId && savedId) {
+      router.replace(`/library?id=${savedId}`);
+      return;
+    }
+
     setIsAuthorized(true);
   }, [libId, router]);
+
+  // 📱 3. BACK-TO-EXIT TRAP (DASHBOARD PAR BACK DABANE PAR APP CLOSE HOGA, LOGIN PAR NAHI JAYEGA)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    window.history.pushState({ isRoot: true }, "", window.location.href);
+
+    const handlePopState = () => {
+      // Rule A: Agar koi popup/modal khula hai toh pehle modal band karein
+      if (
+        showModal ||
+        showVacantModal ||
+        showInquiryModal ||
+        showBroadcastModal ||
+        collectStudent ||
+        historyStudent ||
+        paymentSuccessData
+      ) {
+        setShowModal(false);
+        setShowVacantModal(false);
+        setShowInquiryModal(false);
+        setShowBroadcastModal(false);
+        setCollectStudent(null);
+        setHistoryStudent(null);
+        setPaymentSuccessData(null);
+        window.history.pushState({ isRoot: true }, "", window.location.href);
+        return;
+      }
+
+      // Rule B: Dashboard root par back press hone par window/app exit karein
+      if (window.navigator && (window.navigator as any).app && (window.navigator as any).app.exitApp) {
+        (window.navigator as any).app.exitApp();
+        return;
+      }
+      window.close();
+
+      // Browser policy login screen par jaane se rokegi aur dashboard par hi rakhegi
+      window.history.pushState({ isRoot: true }, "", window.location.href);
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => {
+      window.removeEventListener("popstate", handlePopState);
+    };
+  }, [
+    showModal,
+    showVacantModal,
+    showInquiryModal,
+    showBroadcastModal,
+    collectStudent,
+    historyStudent,
+    paymentSuccessData,
+  ]);
 
   // 🟢 ZERO-FREEZE INSTANT CACHE & 3.5s NETWORK TIMEOUT
   const loadData = async () => {
@@ -1427,9 +1496,7 @@ function LibraryView() {
               <p className="text-xs font-bold text-purple-950 uppercase tracking-wide">Revenue This Month</p>
               <span className="p-2 rounded-xl bg-purple-600 text-white text-xs shadow-sm">₹</span>
             </div>
-            <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-purple-950">
-              {formatINR(monthRevenue)}
-            </p>
+            <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-purple-950">{formatINR(monthRevenue)}</p>
             <p className="mt-1.5 text-xs text-purple-700 font-bold bg-purple-50 px-2 py-0.5 rounded-full w-max border border-purple-200">
               {paid.length} Paid Students
             </p>
@@ -1987,6 +2054,7 @@ function LibraryView() {
               </button>
             </div>
 
+            {/* Re-Admission Badge */}
             {rejoiningStudent && (
               <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] p-2.5 rounded-xl flex items-center justify-between font-medium">
                 <span>✨ <strong>Old Student Recognized:</strong> {rejoiningStudent.name} (Purani payment history linked rahegi)</span>

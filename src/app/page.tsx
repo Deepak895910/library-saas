@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase";
 
@@ -18,6 +18,17 @@ export default function LoginPage() {
 
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+
+  // 🟢 AGAR USER PEHLE SE LOGGED-IN HAI, TOH DIRECT DASHBOARD PAR BHEJO
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const activeLibId = localStorage.getItem("active_library_id");
+      const authToken = localStorage.getItem("auth_token");
+      if (activeLibId && authToken === `auth_verified_${activeLibId}`) {
+        router.replace(`/library?id=${activeLibId}`);
+      }
+    }
+  }, [router]);
 
   // 1. Library Owner Login (Database `libraries` table se check hoga)
   const handleLibraryLogin = async (e: React.FormEvent) => {
@@ -45,18 +56,20 @@ export default function LoginPage() {
       return;
     }
 
-    // 👉 YAHAN COOKIE + STORAGE SET HOTI HAI (Taaki dashboard bahar na feke)
+    // 👉 COOKIE + LOCALSTORAGE + SECURE AUTH TOKEN SET KAREIN
     if (typeof window !== "undefined") {
-      document.cookie = `active_library_id=${data.id}; path=/; max-age=86400; SameSite=Lax`;
+      document.cookie = `active_library_id=${data.id}; path=/; max-age=2592000; SameSite=Lax`;
       sessionStorage.setItem("active_library_id", data.id);
       localStorage.setItem("active_library_id", data.id);
+      localStorage.setItem("auth_token", `auth_verified_${data.id}`);
     }
 
     setLoading(false);
-    router.push(`/library?id=${data.id}`);
+    // router.replace use kiya taaki browser history mein login page na bache
+    router.replace(`/library?id=${data.id}`);
   };
 
-  // 2. Super Admin Login (Database `admin_users` table se check hoga)
+  // 2. Super Admin Login
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg("");
@@ -74,20 +87,18 @@ export default function LoginPage() {
       return;
     }
 
-    // Database ke naye password se match hoga
     if (data.password !== adminPin.trim()) {
       setLoading(false);
       setErrorMsg("Galat Admin Password! Database wala naya password dalein.");
       return;
     }
 
-    // Admin Session Lock
     if (typeof window !== "undefined") {
       sessionStorage.setItem("admin_authenticated", "true");
     }
 
     setLoading(false);
-    router.push("/admin");
+    router.replace("/admin");
   };
 
   return (
@@ -184,7 +195,6 @@ export default function LoginPage() {
               </button>
             </form>
           ) : (
-            /* Super Admin Login Form (Direct Database Verified) */
             <form onSubmit={handleAdminLogin} className="space-y-4">
               <div>
                 <label className="text-xs uppercase font-semibold text-slate-400 tracking-wider">
