@@ -33,6 +33,7 @@ type Inquiry = {
   notes: string;
   status: "pending" | "admitted" | "closed";
   created_at: string;
+  last_called_at?: string | null;
 };
 
 type PaymentRecord = {
@@ -335,7 +336,9 @@ function LibraryView() {
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
+  // Inquiries State (Add & Edit)
   const [showInquiryModal, setShowInquiryModal] = useState(false);
+  const [editingInquiryId, setEditingInquiryId] = useState<string | null>(null);
   const [inquiryForm, setInquiryForm] = useState({
     name: "",
     phone: "",
@@ -395,7 +398,7 @@ function LibraryView() {
     return true;
   };
 
-  // 🚪 1. LOGOUT HANDLER (SIRF IS BUTTON SE HI LOGIN SCREEN KHULEGI)
+  // 🚪 1. LOGOUT: ONLY VIA THIS BUTTON
   const handleLogout = () => {
     if (!confirm("Kya aap sach me logout karna chahte hain?")) return;
     if (typeof window !== "undefined") {
@@ -407,14 +410,13 @@ function LibraryView() {
     router.replace("/");
   };
 
-  // 🔐 2. STRICT AUTH GUARD (UNAUTHORIZED DIRECT LINK BLOCKER)
+  // 🔐 2. STRICT AUTH GUARD: DIRECT LINK COPY-PASTE BLOCKER
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     const savedId = localStorage.getItem("active_library_id");
     const authToken = localStorage.getItem("auth_token");
 
-    // Agar device mein valid login token nahi hai (kisi ne direct link forward kiya ho)
     if (!savedId || !authToken || authToken !== `auth_verified_${savedId}`) {
       localStorage.removeItem("active_library_id");
       localStorage.removeItem("auth_token");
@@ -422,13 +424,11 @@ function LibraryView() {
       return;
     }
 
-    // Agar link me dusri library ID ho jo logged in library se match na kare
     if (libId && libId !== savedId) {
       router.replace(`/library?id=${savedId}`);
       return;
     }
 
-    // Back aane par agar URL se ?id= hat jaye toh turant restore karein
     if (!libId && savedId) {
       router.replace(`/library?id=${savedId}`);
       return;
@@ -437,14 +437,13 @@ function LibraryView() {
     setIsAuthorized(true);
   }, [libId, router]);
 
-  // 📱 3. BACK-TO-EXIT TRAP (DASHBOARD PAR BACK DABANE PAR APP CLOSE HOGA, LOGIN PAR NAHI JAYEGA)
+  // 📱 3. BACK-TO-EXIT TRAP: APP CLOSE ON DASHBOARD BACK
   useEffect(() => {
     if (typeof window === "undefined") return;
 
     window.history.pushState({ isRoot: true }, "", window.location.href);
 
     const handlePopState = () => {
-      // Rule A: Agar koi popup/modal khula hai toh pehle modal band karein
       if (
         showModal ||
         showVacantModal ||
@@ -458,6 +457,7 @@ function LibraryView() {
         setShowVacantModal(false);
         setShowInquiryModal(false);
         setShowBroadcastModal(false);
+        setEditingInquiryId(null);
         setCollectStudent(null);
         setHistoryStudent(null);
         setPaymentSuccessData(null);
@@ -465,14 +465,12 @@ function LibraryView() {
         return;
       }
 
-      // Rule B: Dashboard root par back press hone par window/app exit karein
       if (window.navigator && (window.navigator as any).app && (window.navigator as any).app.exitApp) {
         (window.navigator as any).app.exitApp();
         return;
       }
       window.close();
 
-      // Browser policy login screen par jaane se rokegi aur dashboard par hi rakhegi
       window.history.pushState({ isRoot: true }, "", window.location.href);
     };
 
@@ -790,6 +788,39 @@ function LibraryView() {
     }
   };
 
+  // 🟢 1. CALL CANDIDATE & AUTO-LOG TIMESTAMP
+  const handleCallInquiry = async (inqId: string, phone: string) => {
+    const nowIso = new Date().toISOString();
+
+    setInquiries((prev) =>
+      prev.map((i) => (i.id === inqId ? { ...i, last_called_at: nowIso } : i))
+    );
+
+    try {
+      await supabase
+        .from("inquiries")
+        .update({ last_called_at: nowIso })
+        .eq("id", inqId);
+    } catch (err) {
+      console.warn("Call log save error:", err);
+    }
+
+    window.location.href = `tel:${phone}`;
+  };
+
+  // 🟢 2. OPEN EDIT INQUIRY MODAL
+  function handleOpenEditInquiry(inq: Inquiry) {
+    setEditingInquiryId(inq.id);
+    setInquiryForm({
+      name: inq.name,
+      phone: inq.phone,
+      shift: inq.interested_shift,
+      notes: inq.notes || "",
+    });
+    setShowInquiryModal(true);
+  }
+
+  // 🟢 3. SAVE / UPDATE INQUIRY
   async function handleAddInquiry(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -801,17 +832,43 @@ function LibraryView() {
       phone: inquiryForm.phone.replace(/\D/g, "").slice(-10),
       interested_shift: inquiryForm.shift,
       notes: inquiryForm.notes.trim(),
-      status: "pending",
+      status: "pending" as const,
     };
 
-    const { data, error } = await supabase.from("inquiries").insert([payload]).select();
-    if (!error && data) {
-      setInquiries((prev) => [data[0] as Inquiry, ...prev]);
-      setShowInquiryModal(false);
-      setInquiryForm({ name: "", phone: "", shift: "Morning", notes: "" });
-      showToast("New Inquiry entry saved!");
+    if (editingInquiryId) {
+      const { error } = await supabase
+        .from("inquiries")
+        .update({
+          name: payload.name,
+          phone: payload.phone,
+          interested_shift: payload.interested_shift,
+          notes: payload.notes,
+        })
+        .eq("id", editingInquiryId);
+
+      if (!error) {
+        setInquiries((prev) =>
+          prev.map((i) =>
+            i.id === editingInquiryId ? { ...i, ...payload } : i
+          )
+        );
+        setShowInquiryModal(false);
+        setEditingInquiryId(null);
+        setInquiryForm({ name: "", phone: "", shift: "Morning", notes: "" });
+        showToast("Inquiry lead successfully update ho gayi!");
+      } else {
+        alert("Update error: " + (error?.message || "Unknown error"));
+      }
     } else {
-      alert("Error saving inquiry: " + (error?.message || "Unknown"));
+      const { data, error } = await supabase.from("inquiries").insert([payload]).select();
+      if (!error && data) {
+        setInquiries((prev) => [data[0] as Inquiry, ...prev]);
+        setShowInquiryModal(false);
+        setInquiryForm({ name: "", phone: "", shift: "Morning", notes: "" });
+        showToast("New Inquiry entry saved!");
+      } else {
+        alert("Error saving inquiry: " + (error?.message || "Unknown error"));
+      }
     }
   }
 
@@ -1319,7 +1376,6 @@ function LibraryView() {
 
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 pb-24 md:pb-12 font-sans antialiased">
-      {/* Offline Alert Strip */}
       {!isOnline && (
         <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 text-xs font-bold py-1.5 px-4 text-center sticky top-0 z-50 shadow-sm flex items-center justify-center gap-2">
           <span>⚡ Offline Mode:</span>
@@ -1327,11 +1383,9 @@ function LibraryView() {
         </div>
       )}
 
-      {/* Modern Glassmorphic Sticky Header */}
       <header className="sticky top-0 z-40 bg-white/85 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
           
-          {/* Logo with Tap-to-Upload */}
           <div className="flex items-center gap-3">
             <label
               title="Click to change logo"
@@ -1374,7 +1428,6 @@ function LibraryView() {
             </div>
           </div>
 
-          {/* Desktop Tab Switcher */}
           <div className="hidden md:flex items-center gap-1.5 bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200/60">
             <button
               type="button"
@@ -1417,7 +1470,6 @@ function LibraryView() {
             </button>
           </div>
 
-          {/* Quick Header Actions */}
           <div className="flex items-center gap-2">
             <button
               type="button"
@@ -1448,7 +1500,6 @@ function LibraryView() {
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        {/* Metric Summary Cards */}
         <section className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4 mb-6">
           <article className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(79,70,229,0.08)]">
             <div className="flex justify-between items-start">
@@ -1519,7 +1570,6 @@ function LibraryView() {
                 </p>
               </div>
 
-              {/* Shift Switcher */}
               <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1 rounded-xl">
                 {(["All", "Morning", "Evening", "Full Day"] as const).map((sh) => (
                   <button
@@ -1537,7 +1587,6 @@ function LibraryView() {
               </div>
             </div>
 
-            {/* Grid Legend */}
             <div className="flex items-center gap-4 py-3 text-xs text-slate-600 font-semibold border-b border-slate-100 mb-5">
               <div className="flex items-center gap-1.5">
                 <span className="w-3.5 h-3.5 rounded bg-emerald-500 shadow-sm"></span>
@@ -1553,7 +1602,6 @@ function LibraryView() {
               </div>
             </div>
 
-            {/* Grid Cells */}
             <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 lg:grid-cols-10 gap-2.5 max-h-[600px] overflow-y-auto p-1">
               {allSeatNames.map((seatNum) => {
                 const occupant = seatGridOccupantMap.get(seatNum.toUpperCase());
@@ -1799,13 +1847,13 @@ function LibraryView() {
           </section>
         )}
 
-        {/* TAB 3: INQUIRIES VIEW */}
+        {/* TAB 3: INQUIRIES VIEW (WITH LAST CALLED & EDIT BUTTON) */}
         {activeTab === "inquiries" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
             <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-3 sm:items-center justify-between bg-slate-50/70">
               <div>
                 <h3 className="font-extrabold text-slate-900">New Admission Leads & Inquiries</h3>
-                <p className="text-xs text-slate-500">Call, message or convert demo candidates into registered students.</p>
+                <p className="text-xs text-slate-500">Call, track timestamps, edit leads or convert into students.</p>
               </div>
               <div className="flex items-center gap-2">
                 <button
@@ -1817,7 +1865,11 @@ function LibraryView() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setShowInquiryModal(true)}
+                  onClick={() => {
+                    setEditingInquiryId(null);
+                    setInquiryForm({ name: "", phone: "", shift: "Morning", notes: "" });
+                    setShowInquiryModal(true);
+                  }}
                   className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-xs transition"
                 >
                   + Add Inquiry
@@ -1851,13 +1903,15 @@ function LibraryView() {
                         <td className="px-5 py-3.5">
                           <div className="flex items-center gap-2">
                             <span className="font-mono text-slate-700 font-bold">{inq.phone}</span>
-                            <a
-                              href={`tel:${inq.phone}`}
-                              title="Direct Call"
-                              className="w-6 h-6 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-md flex items-center justify-center text-xs font-bold"
+                            {/* 🟢 Call Handler with Live Timestamp */}
+                            <button
+                              type="button"
+                              onClick={() => handleCallInquiry(inq.id, inq.phone)}
+                              title="Call Candidate & Log Time"
+                              className="w-6 h-6 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-md flex items-center justify-center text-xs font-bold transition"
                             >
                               📞
-                            </a>
+                            </button>
                             <a
                               href={`https://wa.me/91${inq.phone}?text=${encodeURIComponent(
                                 `Namaste ${inq.name}, thank you for contacting ${currentLib?.name || "our library"}. Would you like to schedule your trial slot today?`
@@ -1870,6 +1924,16 @@ function LibraryView() {
                               💬
                             </a>
                           </div>
+                          {/* 🟢 Last Called Time Status */}
+                          <div className="mt-1">
+                            {inq.last_called_at ? (
+                              <span className="text-[10px] text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-medium border border-indigo-100 inline-block">
+                                🕒 Called: {new Date(inq.last_called_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}, {new Date(inq.last_called_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 italic">Not called yet</span>
+                            )}
+                          </div>
                         </td>
                         <td className="px-5 py-3.5">
                           <span className={`inline-flex rounded-md px-2.5 py-0.5 text-[10px] font-bold ${shiftBadge(inq.interested_shift)}`}>
@@ -1879,18 +1943,28 @@ function LibraryView() {
                         <td className="px-5 py-3.5 text-slate-600">{inq.notes || "General Inquiry"}</td>
                         <td className="px-5 py-3.5 text-slate-500">{formatDate(inq.created_at)}</td>
                         <td className="px-5 py-3.5 text-center">
-                          <div className="flex items-center justify-center gap-2">
+                          <div className="flex items-center justify-center gap-1.5">
                             <button
                               type="button"
                               onClick={() => handleConvertInquiryToStudent(inq)}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-2.5 py-1 rounded-md shadow-xs transition"
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-2 py-1 rounded-md shadow-xs transition"
                             >
-                              Confirm Admission 🎓
+                              Enroll 🎓
+                            </button>
+                            {/* 🟢 Edit Inquiry Button */}
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditInquiry(inq)}
+                              title="Edit Lead"
+                              className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition"
+                            >
+                              ✏️
                             </button>
                             <button
                               type="button"
                               onClick={() => handleDeleteInquiry(inq.id)}
                               className="text-red-500 hover:text-red-700 font-bold px-2 py-1"
+                              title="Delete Lead"
                             >
                               ✕
                             </button>
@@ -1906,7 +1980,6 @@ function LibraryView() {
         )}
       </main>
 
-      {/* MOBILE NATIVE BOTTOM BAR */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-6 py-2.5 flex justify-between items-center shadow-lg">
         <button
           onClick={() => setActiveTab("students")}
@@ -1947,11 +2020,26 @@ function LibraryView() {
         </button>
       </nav>
 
-      {/* MODAL: ADD INQUIRY */}
+      {/* MODAL: ADD / EDIT INQUIRY */}
       {showInquiryModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={handleAddInquiry} className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl space-y-3">
-            <h3 className="text-base font-bold text-slate-900">Add New Admission Lead</h3>
+            <div className="flex justify-between items-center">
+              <h3 className="text-base font-bold text-slate-900">
+                {editingInquiryId ? "Edit Admission Lead" : "Add New Admission Lead"}
+              </h3>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowInquiryModal(false);
+                  setEditingInquiryId(null);
+                }}
+                className="text-slate-400 hover:text-slate-600 font-bold text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
             <input
               required
               placeholder="Candidate Name"
@@ -1988,7 +2076,10 @@ function LibraryView() {
             <div className="flex justify-end gap-2 pt-2">
               <button
                 type="button"
-                onClick={() => setShowInquiryModal(false)}
+                onClick={() => {
+                  setShowInquiryModal(false);
+                  setEditingInquiryId(null);
+                }}
                 className="px-4 py-2 text-xs font-bold text-slate-600"
               >
                 Cancel
@@ -1997,7 +2088,7 @@ function LibraryView() {
                 type="submit"
                 className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-4 py-2 rounded-xl"
               >
-                Save Inquiry
+                {editingInquiryId ? "Update Lead" : "Save Inquiry"}
               </button>
             </div>
           </form>
@@ -2054,7 +2145,6 @@ function LibraryView() {
               </button>
             </div>
 
-            {/* Re-Admission Badge */}
             {rejoiningStudent && (
               <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-[11px] p-2.5 rounded-xl flex items-center justify-between font-medium">
                 <span>✨ <strong>Old Student Recognized:</strong> {rejoiningStudent.name} (Purani payment history linked rahegi)</span>
@@ -2186,7 +2276,6 @@ function LibraryView() {
             </p>
 
             <div className="mt-4 space-y-3.5">
-              {/* 🟢 CUSTOM PAYMENT DATE PICKER */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-xs font-bold text-slate-700">Payment Date Received:</label>
