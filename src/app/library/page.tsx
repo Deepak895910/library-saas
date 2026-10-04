@@ -136,19 +136,24 @@ function downloadReceiptPDF(
   amount: number,
   months: number,
   mode: string,
-  paymentDateStr: string = getLocalDateString()
+  paymentDateStr: string = getLocalDateString(),
+  validUntilDateStr?: string
 ) {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a5" });
   const receiptNo = `LIB-${Date.now().toString().slice(-6)}`;
   const dateStr = formatDate(paymentDateStr);
 
-  const nextDue = new Date(paymentDateStr);
-  nextDue.setMonth(nextDue.getMonth() + months);
-  const validTill = nextDue.toLocaleDateString("en-IN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  const validTill = validUntilDateStr
+    ? formatDate(validUntilDateStr)
+    : (() => {
+        const nextDue = new Date(paymentDateStr);
+        nextDue.setMonth(nextDue.getMonth() + months);
+        return nextDue.toLocaleDateString("en-IN", {
+          day: "numeric",
+          month: "short",
+          year: "numeric",
+        });
+      })();
 
   doc.setDrawColor(203, 213, 225);
   doc.setLineWidth(0.8);
@@ -240,6 +245,7 @@ function downloadReceiptPDF(
   doc.save(`${student.name.replace(/\s+/g, "_")}_Fee_Receipt.pdf`);
 }
 
+// 🟢 ACCURATE CYCLE-BASED DUE DATE CALCULATION
 function calculateMonthlyDue(
   joiningDateStr: string,
   lastPaidDateStr: string | null,
@@ -253,29 +259,19 @@ function calculateMonthlyDue(
   today.setHours(0, 0, 0, 0);
 
   const jParts = (joiningDateStr || getLocalDateString()).split("-").map(Number);
+  const joinYear = jParts[0];
+  const joinMonth = jParts[1] - 1;
   const joinDay = jParts[2] || 1;
-  const joinDate = new Date(jParts[0], jParts[1] - 1, joinDay);
-  joinDate.setHours(0, 0, 0, 0);
+
+  let targetDue: Date;
 
   if (!lastPaidDateStr) {
-    const dueDateText = joinDate.toLocaleDateString("en-IN", {
-      day: "numeric",
-      month: "short",
-      year: "numeric",
-    });
-    return {
-      dueDateText,
-      status: "Due Today",
-      pendingMonths: 1,
-    };
+    targetDue = new Date(joinYear, joinMonth, joinDay);
+  } else {
+    const pParts = lastPaidDateStr.split("-").map(Number);
+    targetDue = new Date(pParts[0], pParts[1] - 1, pParts[2] || joinDay);
   }
 
-  const baseDate = new Date(lastPaidDateStr);
-  baseDate.setHours(0, 0, 0, 0);
-
-  const targetDue = new Date(baseDate.getFullYear(), baseDate.getMonth() + 1, 1);
-  const maxDaysInTargetMonth = new Date(targetDue.getFullYear(), targetDue.getMonth() + 1, 0).getDate();
-  targetDue.setDate(Math.min(joinDay, maxDaysInTargetMonth));
   targetDue.setHours(0, 0, 0, 0);
 
   const dueDateText = targetDue.toLocaleDateString("en-IN", {
@@ -336,7 +332,7 @@ function LibraryView() {
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // Inquiries State (Add & Edit)
+  // Inquiries State
   const [showInquiryModal, setShowInquiryModal] = useState(false);
   const [editingInquiryId, setEditingInquiryId] = useState<string | null>(null);
   const [inquiryForm, setInquiryForm] = useState({
@@ -357,6 +353,7 @@ function LibraryView() {
     mode: string;
     waUrl: string;
     paymentDate: string;
+    paidUntilDate: string;
   } | null>(null);
 
   const todayStr = getLocalDateString();
@@ -398,7 +395,6 @@ function LibraryView() {
     return true;
   };
 
-  // 🚪 1. LOGOUT: ONLY VIA THIS BUTTON
   const handleLogout = () => {
     if (!confirm("Kya aap sach me logout karna chahte hain?")) return;
     if (typeof window !== "undefined") {
@@ -410,7 +406,7 @@ function LibraryView() {
     router.replace("/");
   };
 
-  // 🔐 2. STRICT AUTH GUARD: DIRECT LINK COPY-PASTE BLOCKER
+  // 🔐 STRICT AUTH GUARD
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -437,7 +433,7 @@ function LibraryView() {
     setIsAuthorized(true);
   }, [libId, router]);
 
-  // 📱 3. BACK-TO-EXIT TRAP: APP CLOSE ON DASHBOARD BACK
+  // 📱 BACK-TO-EXIT TRAP
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -788,7 +784,7 @@ function LibraryView() {
     }
   };
 
-  // 🟢 1. CALL CANDIDATE & AUTO-LOG TIMESTAMP
+  // 🟢 CALL CANDIDATE & AUTO-LOG TIMESTAMP
   const handleCallInquiry = async (inqId: string, phone: string) => {
     const nowIso = new Date().toISOString();
 
@@ -808,7 +804,7 @@ function LibraryView() {
     window.location.href = `tel:${phone}`;
   };
 
-  // 🟢 2. OPEN EDIT INQUIRY MODAL
+  // 🟢 OPEN EDIT INQUIRY MODAL
   function handleOpenEditInquiry(inq: Inquiry) {
     setEditingInquiryId(inq.id);
     setInquiryForm({
@@ -820,7 +816,7 @@ function LibraryView() {
     setShowInquiryModal(true);
   }
 
-  // 🟢 3. SAVE / UPDATE INQUIRY
+  // 🟢 SAVE / UPDATE INQUIRY
   async function handleAddInquiry(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -867,7 +863,7 @@ function LibraryView() {
         setInquiryForm({ name: "", phone: "", shift: "Morning", notes: "" });
         showToast("New Inquiry entry saved!");
       } else {
-        alert("Error saving inquiry: " + (error?.message || "Unknown error"));
+        alert("Error saving inquiry: " + (error?.message || "Unknown"));
       }
     }
   }
@@ -1037,17 +1033,32 @@ function LibraryView() {
     setLoadingHistory(false);
   }
 
+  // 🟢 MULTI-MONTH CYCLE-BASED FEE COLLECTION HANDLER
   async function submitCollectFee(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
     if (!collectStudent || !currentLib?.id) return;
 
     const paymentDateUsed = collectCustomDate || getLocalDateString();
+    
+    // Cycle joining date se match karegi
     const jParts = (collectStudent.joiningDate || todayStr).split("-").map(Number);
     const joinDay = jParts[2] || 1;
 
-    const baseDate = new Date(paymentDateUsed);
-    const paidUntil = new Date(baseDate.getFullYear(), baseDate.getMonth() + collectMonths, 1);
+    let baseCycleDate: Date;
+    if (collectStudent.lastPaidDate) {
+      const lp = collectStudent.lastPaidDate.split("-").map(Number);
+      baseCycleDate = new Date(lp[0], lp[1] - 1, lp[2] || joinDay);
+    } else {
+      baseCycleDate = new Date(jParts[0], jParts[1] - 1, joinDay);
+    }
+
+    // Naye cycle me utne months add honge jitne pay kiye hain (1, 2, 3 months...)
+    const paidUntil = new Date(
+      baseCycleDate.getFullYear(),
+      baseCycleDate.getMonth() + collectMonths,
+      1
+    );
     const maxDays = new Date(paidUntil.getFullYear(), paidUntil.getMonth() + 1, 0).getDate();
     paidUntil.setDate(Math.min(joinDay, maxDays));
     const paidUntilStr = getLocalDateString(paidUntil);
@@ -1089,6 +1100,11 @@ function LibraryView() {
       console.warn("Ledger insert error:", err);
     }
 
+    const { dueDateText, status } = calculateMonthlyDue(
+      targetStudent.joiningDate,
+      paidUntilStr
+    );
+
     setStudents((prev) =>
       prev.map((s) =>
         s.id === targetStudent.id
@@ -1096,7 +1112,8 @@ function LibraryView() {
               ...s,
               lastPaidDate: paidUntilStr,
               lastPaymentMode: chosenMode,
-              status: "Paid" as const,
+              dueDate: dueDateText,
+              status: status,
               pendingMonths: 0,
             }
           : s
@@ -1115,7 +1132,8 @@ function LibraryView() {
         totalCollected,
         countMonths,
         chosenMode,
-        paymentDateUsed
+        paymentDateUsed,
+        paidUntilStr
       );
     } catch (pdfErr) {
       console.error("PDF generation error:", pdfErr);
@@ -1125,7 +1143,7 @@ function LibraryView() {
       targetStudent.shift === "Random" ? "Floating Seat" : `Seat ${targetStudent.seatNo}`;
     const waText = `Namaste ${targetStudent.name},\n\nWe have received your library fee payment of ${formatINR(
       totalCollected
-    )} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}) on ${formatDate(paymentDateUsed)}.\n\nYour official PDF receipt is attached.\n\nThank you,\n${
+    )} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}) on ${formatDate(paymentDateUsed)}.\n\nYour seat is valid till ${formatDate(paidUntilStr)}.\n\nThank you,\n${
       currentLib.name || "LIBRARY MANAGEMENT"
     }`;
     const waUrl = `https://wa.me/91${targetStudent.phone}?text=${encodeURIComponent(waText)}`;
@@ -1137,6 +1155,7 @@ function LibraryView() {
       mode: chosenMode,
       waUrl: waUrl,
       paymentDate: paymentDateUsed,
+      paidUntilDate: paidUntilStr,
     });
 
     window.open(waUrl, "_blank", "noopener,noreferrer");
@@ -1554,7 +1573,7 @@ function LibraryView() {
           </article>
         </section>
 
-        {/* TAB 1: INTERACTIVE VISUAL SEAT GRID */}
+        {/* TAB 1: SEAT MAP */}
         {activeTab === "seats" && (
           <div className="bg-white p-5 rounded-2xl border border-slate-200/80 shadow-sm mb-8">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-slate-100">
@@ -1651,7 +1670,7 @@ function LibraryView() {
           </div>
         )}
 
-        {/* TAB 2: REGISTERED STUDENTS VIEW */}
+        {/* TAB 2: STUDENTS TABLE */}
         {activeTab === "students" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
             <div className="flex flex-col gap-4 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
@@ -1847,7 +1866,7 @@ function LibraryView() {
           </section>
         )}
 
-        {/* TAB 3: INQUIRIES VIEW (WITH LAST CALLED & EDIT BUTTON) */}
+        {/* TAB 3: INQUIRIES VIEW */}
         {activeTab === "inquiries" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
             <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-3 sm:items-center justify-between bg-slate-50/70">
@@ -1903,7 +1922,6 @@ function LibraryView() {
                         <td className="px-5 py-3.5">
                           <div className="flex items-center gap-2">
                             <span className="font-mono text-slate-700 font-bold">{inq.phone}</span>
-                            {/* 🟢 Call Handler with Live Timestamp */}
                             <button
                               type="button"
                               onClick={() => handleCallInquiry(inq.id, inq.phone)}
@@ -1924,7 +1942,6 @@ function LibraryView() {
                               💬
                             </a>
                           </div>
-                          {/* 🟢 Last Called Time Status */}
                           <div className="mt-1">
                             {inq.last_called_at ? (
                               <span className="text-[10px] text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-medium border border-indigo-100 inline-block">
@@ -1947,11 +1964,10 @@ function LibraryView() {
                             <button
                               type="button"
                               onClick={() => handleConvertInquiryToStudent(inq)}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-2 py-1 rounded-md shadow-xs transition"
+                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-2.5 py-1 rounded-md shadow-xs transition"
                             >
                               Enroll 🎓
                             </button>
-                            {/* 🟢 Edit Inquiry Button */}
                             <button
                               type="button"
                               onClick={() => handleOpenEditInquiry(inq)}
@@ -1980,6 +1996,7 @@ function LibraryView() {
         )}
       </main>
 
+      {/* MOBILE BOTTOM NAVIGATION */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-6 py-2.5 flex justify-between items-center shadow-lg">
         <button
           onClick={() => setActiveTab("students")}
@@ -2095,7 +2112,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: BULK WHATSAPP BROADCAST */}
+      {/* MODAL: BROADCAST */}
       {showBroadcastModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl space-y-4">
@@ -2266,7 +2283,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: MULTI-MONTH FEE COLLECTION WITH CUSTOM PAYMENT DATE */}
+      {/* MODAL: COLLECT FEE */}
       {collectStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={submitCollectFee} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
@@ -2296,10 +2313,10 @@ function LibraryView() {
                   onChange={(e) => setCollectMonths(Number(e.target.value))}
                   className="w-full rounded-xl border border-slate-200 p-2 text-xs font-bold bg-slate-50 text-slate-900"
                 >
-                  <option value={1}>1 Month (Current Due)</option>
-                  <option value={2}>2 Months</option>
-                  <option value={3}>3 Months</option>
-                  <option value={4}>4 Months</option>
+                  <option value={1}>1 Month (Current Cycle)</option>
+                  <option value={2}>2 Months (+2 Cycles)</option>
+                  <option value={3}>3 Months (+3 Cycles)</option>
+                  <option value={4}>4 Months (+4 Cycles)</option>
                   <option value={6}>6 Months (Half Year)</option>
                   <option value={12}>12 Months (Full Year)</option>
                 </select>
@@ -2360,7 +2377,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: VACANT SEATS & SEAT CAPACITY CONFIG */}
+      {/* MODAL: VACANT SEATS */}
       {showVacantModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
@@ -2530,6 +2547,9 @@ function LibraryView() {
               <p className="text-xs text-slate-500 mt-1">
                 {paymentSuccessData.student.name} ki {formatINR(paymentSuccessData.amount)} fees jama ho gayi hai ({paymentSuccessData.mode}).
               </p>
+              <p className="text-xs font-bold text-emerald-700 mt-1 bg-emerald-50 py-1 rounded-lg">
+                Valid Till: {formatDate(paymentSuccessData.paidUntilDate)}
+              </p>
             </div>
 
             <div className="flex flex-col gap-2 pt-2">
@@ -2552,7 +2572,8 @@ function LibraryView() {
                     paymentSuccessData.amount,
                     paymentSuccessData.months,
                     paymentSuccessData.mode,
-                    paymentSuccessData.paymentDate
+                    paymentSuccessData.paymentDate,
+                    paymentSuccessData.paidUntilDate
                   );
                 }}
                 className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-2 px-4 rounded-xl text-xs"
