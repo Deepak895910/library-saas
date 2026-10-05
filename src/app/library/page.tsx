@@ -369,7 +369,7 @@ function LibraryView() {
     name: "",
     phone: "",
     shift: "Morning" as Shift,
-    monthlyFee: "900",
+    monthlyFee: "600",
     joiningDate: todayStr,
   });
 
@@ -894,7 +894,7 @@ function LibraryView() {
       name: inq.name,
       phone: inq.phone,
       shift: inq.interested_shift,
-      monthlyFee: "900",
+      monthlyFee: "600",
       joiningDate: todayStr,
     });
     setActiveTab("students");
@@ -961,7 +961,7 @@ function LibraryView() {
       name: "",
       phone: "",
       shift: "Morning",
-      monthlyFee: "900",
+      monthlyFee: "600",
       joiningDate: todayStr,
     });
     setFormError("");
@@ -1221,7 +1221,7 @@ function LibraryView() {
         ? (form.seatNo.trim().toUpperCase() || "FLOATING")
         : form.seatNo.trim().toUpperCase();
 
-      const fee = Number(form.monthlyFee) || 900;
+      const fee = Number(form.monthlyFee) || 600;
       const cleanPhone = form.phone.replace(/\D/g, "").slice(-10);
 
       if (!isRandom && seatNo !== "FLOATING" && seatNo !== "WAITING" && seatNo !== "HOLD") {
