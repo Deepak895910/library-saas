@@ -198,19 +198,22 @@ function downloadReceiptPDF(
   doc.text(`Phone: +91 ${student.phone}`, 18, 70);
   doc.text(`Shift: ${student.shift} Shift`, 18, 76);
 
-  const seatLabel = student.shift === "Random" ? "Floating Seat" : `Seat No: ${student.seatNo}`;
+  const seatLabel =
+    student.shift === "Random" || student.seatNo === "FLOATING"
+      ? "Floating Seat (Unassigned)"
+      : `Seat No: ${student.seatNo}`;
   doc.setFont("helvetica", "bold");
   doc.text(seatLabel, 130, 64, { align: "right" });
 
   doc.setFont("helvetica", "bold");
   doc.setTextColor(51, 65, 85);
   doc.text("Description", 14, 93);
-  doc.text("Duration", 80, 93);
+  doc.text("Duration / Plan", 80, 93);
   doc.text("Amount", 134, 93, { align: "right" });
   doc.line(14, 96, 134, 96);
 
   doc.setFont("helvetica", "normal");
-  doc.text("Library Seat Monthly Fee", 14, 104);
+  doc.text("Library Seat Fee Payment", 14, 104);
   doc.text(`${months} Month(s)`, 80, 104);
   doc.setFont("helvetica", "bold");
   doc.text(`INR ${amount}`, 134, 104, { align: "right" });
@@ -245,7 +248,6 @@ function downloadReceiptPDF(
   doc.save(`${student.name.replace(/\s+/g, "_")}_Fee_Receipt.pdf`);
 }
 
-// 🟢 ACCURATE CYCLE-BASED DUE DATE CALCULATION
 function calculateMonthlyDue(
   joiningDateStr: string,
   lastPaidDateStr: string | null,
@@ -323,11 +325,14 @@ function LibraryView() {
   const [seatShiftView, setSeatShiftView] = useState<Shift | "All">("Morning");
   const [vacantShiftFilter, setVacantShiftFilter] = useState<Shift | "All">("All");
 
+  // Collect Fee State with Custom/Partial Amount
   const [collectStudent, setCollectStudent] = useState<Student | null>(null);
   const [collectMonths, setCollectMonths] = useState<number>(1);
+  const [customAmount, setCustomAmount] = useState<string>("");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("Cash");
   const [collectCustomDate, setCollectCustomDate] = useState<string>(getLocalDateString());
 
+  // History State
   const [historyStudent, setHistoryStudent] = useState<Student | null>(null);
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
@@ -484,7 +489,7 @@ function LibraryView() {
     paymentSuccessData,
   ]);
 
-  // 🟢 ZERO-FREEZE INSTANT CACHE & 3.5s NETWORK TIMEOUT
+  // 🟢 LOAD CACHED DATA & AUTO FETCH
   const loadData = async () => {
     const targetId = libId || (typeof window !== "undefined" ? localStorage.getItem("active_library_id") : null);
     if (!targetId) return;
@@ -657,8 +662,12 @@ function LibraryView() {
   const activeStudents = useMemo(() => students.filter((s) => s.status !== "Left"), [students]);
   const leftStudents = useMemo(() => students.filter((s) => s.status === "Left"), [students]);
 
-  const randomStudentsCount = activeStudents.filter((s) => s.shift === "Random").length;
-  const fixedStudents = activeStudents.filter((s) => s.shift !== "Random");
+  const randomStudentsCount = activeStudents.filter(
+    (s) => s.shift === "Random" || s.seatNo === "FLOATING"
+  ).length;
+  const fixedStudents = activeStudents.filter(
+    (s) => s.shift !== "Random" && s.seatNo !== "FLOATING"
+  );
   const bookedSeatNumbers = useMemo(() => {
     return Array.from(new Set(fixedStudents.map((s) => s.seatNo.toUpperCase())));
   }, [fixedStudents]);
@@ -684,7 +693,7 @@ function LibraryView() {
     const bookedSet = new Set(
       activeStudents
         .filter((s) => {
-          if (s.shift === "Random") return false;
+          if (s.shift === "Random" || s.seatNo === "FLOATING") return false;
           if (vacantShiftFilter === "All") return true;
           if (s.shift === "Full Day" || vacantShiftFilter === "Full Day") return true;
           return s.shift === vacantShiftFilter;
@@ -749,8 +758,13 @@ function LibraryView() {
     const owner = currentLib?.owner_name || "Owner";
     const totalAmount = student.monthlyFee * Math.max(1, student.pendingMonths);
     const monthsText = student.pendingMonths > 1 ? ` (${student.pendingMonths} Months Overdue)` : "";
-    const seatInfo = student.shift === "Random" ? "Floating/Random Shift" : `Seat ${student.seatNo}`;
-    return `Namaste ${student.name},\n\nThis is a reminder from ${libName}. Your ${seatInfo} monthly fee of ${formatINR(totalAmount)}${monthsText} is ${student.status === "Overdue" ? "overdue" : "due today"}.\n\nPlease complete the payment at your earliest convenience.\n\nThank you,\n${owner}\n${libName}`;
+    const seatInfo =
+      student.shift === "Random" || student.seatNo === "FLOATING"
+        ? "Floating / Advance Slot"
+        : `Seat ${student.seatNo}`;
+    return `Namaste ${student.name},\n\nThis is a reminder from ${libName}. Your ${seatInfo} monthly fee of ${formatINR(
+      totalAmount
+    )}${monthsText} is ${student.status === "Overdue" ? "overdue" : "due today"}.\n\nPlease complete the payment at your earliest convenience.\n\nThank you,\n${owner}\n${libName}`;
   }
 
   function openWhatsApp(student: Student) {
@@ -784,7 +798,6 @@ function LibraryView() {
     }
   };
 
-  // 🟢 CALL CANDIDATE & AUTO-LOG TIMESTAMP
   const handleCallInquiry = async (inqId: string, phone: string) => {
     const nowIso = new Date().toISOString();
 
@@ -804,7 +817,6 @@ function LibraryView() {
     window.location.href = `tel:${phone}`;
   };
 
-  // 🟢 OPEN EDIT INQUIRY MODAL
   function handleOpenEditInquiry(inq: Inquiry) {
     setEditingInquiryId(inq.id);
     setInquiryForm({
@@ -816,7 +828,6 @@ function LibraryView() {
     setShowInquiryModal(true);
   }
 
-  // 🟢 SAVE / UPDATE INQUIRY
   async function handleAddInquiry(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -844,9 +855,7 @@ function LibraryView() {
 
       if (!error) {
         setInquiries((prev) =>
-          prev.map((i) =>
-            i.id === editingInquiryId ? { ...i, ...payload } : i
-          )
+          prev.map((i) => (i.id === editingInquiryId ? { ...i, ...payload } : i))
         );
         setShowInquiryModal(false);
         setEditingInquiryId(null);
@@ -933,12 +942,13 @@ function LibraryView() {
     const csvContent =
       "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
     const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("a");
-    link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `${currentLib?.name || "Library"}_Students_${todayStr}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    const link = document.createElement("link");
+    const a = document.createElement("a");
+    a.setAttribute("href", encodedUri);
+    a.setAttribute("download", `${currentLib?.name || "Library"}_Students_${todayStr}.csv`);
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
     showToast("Excel/CSV export downloaded!");
   }
 
@@ -1008,13 +1018,17 @@ function LibraryView() {
     }
   }
 
+  // 🟢 COLLECT FEE INITIALIZER WITH CUSTOM AMOUNT
   function handleOpenCollect(student: Student) {
+    const defaultMonths = Math.max(1, student.pendingMonths);
     setCollectStudent(student);
-    setCollectMonths(Math.max(1, student.pendingMonths));
+    setCollectMonths(defaultMonths);
+    setCustomAmount(String(student.monthlyFee * defaultMonths));
     setPaymentMode("Cash");
     setCollectCustomDate(getLocalDateString());
   }
 
+  // 🟢 OPEN PAYMENT HISTORY MODAL
   async function handleOpenHistory(student: Student) {
     setHistoryStudent(student);
     setLoadingHistory(true);
@@ -1033,7 +1047,7 @@ function LibraryView() {
     setLoadingHistory(false);
   }
 
-  // 🟢 MULTI-MONTH CYCLE-BASED FEE COLLECTION HANDLER
+  // 🟢 MULTI-MONTH & CUSTOM / PARTIAL FEE COLLECTION HANDLER
   async function submitCollectFee(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -1041,7 +1055,7 @@ function LibraryView() {
 
     const paymentDateUsed = collectCustomDate || getLocalDateString();
     
-    // Cycle joining date se match karegi
+    // Cycle joining date se calculate hogi
     const jParts = (collectStudent.joiningDate || todayStr).split("-").map(Number);
     const joinDay = jParts[2] || 1;
 
@@ -1053,7 +1067,6 @@ function LibraryView() {
       baseCycleDate = new Date(jParts[0], jParts[1] - 1, joinDay);
     }
 
-    // Naye cycle me utne months add honge jitne pay kiye hain (1, 2, 3 months...)
     const paidUntil = new Date(
       baseCycleDate.getFullYear(),
       baseCycleDate.getMonth() + collectMonths,
@@ -1063,7 +1076,11 @@ function LibraryView() {
     paidUntil.setDate(Math.min(joinDay, maxDays));
     const paidUntilStr = getLocalDateString(paidUntil);
 
-    const totalCollected = collectStudent.monthlyFee * collectMonths;
+    // 🟢 Custom / Partial Amount support
+    const totalCollected = Number(customAmount) > 0 
+      ? Number(customAmount) 
+      : collectStudent.monthlyFee * collectMonths;
+
     const targetStudent = collectStudent;
     const chosenMode = paymentMode;
     const countMonths = collectMonths;
@@ -1121,7 +1138,7 @@ function LibraryView() {
     );
 
     setCollectStudent(null);
-    showToast(`Fees successfully collect ho gayi (${chosenMode})!`);
+    showToast(`Fees successfully collect ho gayi (${formatINR(totalCollected)})!`);
 
     try {
       downloadReceiptPDF(
@@ -1140,7 +1157,10 @@ function LibraryView() {
     }
 
     const seatInfo =
-      targetStudent.shift === "Random" ? "Floating Seat" : `Seat ${targetStudent.seatNo}`;
+      targetStudent.shift === "Random" || targetStudent.seatNo === "FLOATING"
+        ? "Floating Slot"
+        : `Seat ${targetStudent.seatNo}`;
+
     const waText = `Namaste ${targetStudent.name},\n\nWe have received your library fee payment of ${formatINR(
       totalCollected
     )} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}) on ${formatDate(paymentDateUsed)}.\n\nYour seat is valid till ${formatDate(paidUntilStr)}.\n\nThank you,\n${
@@ -1196,25 +1216,21 @@ function LibraryView() {
 
     try {
       const isRandom = form.shift === "Random";
-      const seatNo = isRandom
-        ? form.seatNo.trim().toUpperCase() || "FLOATING"
+      // Allow Advance / Floating seating even if seat is left empty
+      const seatNo = isRandom || !form.seatNo.trim()
+        ? (form.seatNo.trim().toUpperCase() || "FLOATING")
         : form.seatNo.trim().toUpperCase();
 
       const fee = Number(form.monthlyFee) || 900;
       const cleanPhone = form.phone.replace(/\D/g, "").slice(-10);
 
-      if (!isRandom) {
-        if (!seatNo) {
-          setFormError("Kripya Seat No bharein!");
-          setSavingStudent(false);
-          return;
-        }
-
+      if (!isRandom && seatNo !== "FLOATING" && seatNo !== "WAITING" && seatNo !== "HOLD") {
         const targetId = editingId || rejoiningStudent?.id;
         const isBooked = activeStudents.some(
           (s) =>
             s.id !== targetId &&
             s.shift !== "Random" &&
+            s.seatNo !== "FLOATING" &&
             s.seatNo.toUpperCase() === seatNo &&
             (s.shift === form.shift || s.shift === "Full Day" || form.shift === "Full Day")
         );
@@ -1337,8 +1353,8 @@ function LibraryView() {
           ...prev,
         ]);
         showToast(
-          isRandom
-            ? `${payload.name} ko Random shift me add kar diya.`
+          seatNo === "FLOATING"
+            ? `${payload.name} ko Advance/Floating slot me add kar diya.`
             : `${payload.name} ko seat ${seatNo} par jod diya.`
         );
       }
@@ -1528,7 +1544,7 @@ function LibraryView() {
             <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-indigo-950">{activeStudents.length}</p>
             <p className="mt-1.5 text-xs text-slate-600 font-medium">
               <span className="font-extrabold text-slate-900">{bookedSeatNumbers.length}</span> Fixed ·{" "}
-              <span className="font-extrabold text-rose-600">{randomStudentsCount}</span> Floating
+              <span className="font-extrabold text-rose-600">{randomStudentsCount}</span> Floating/Hold
             </p>
           </article>
 
@@ -1731,7 +1747,7 @@ function LibraryView() {
                             className={`inline-flex min-w-[3.25rem] items-center justify-center rounded-lg px-2.5 py-1 font-mono font-black ${
                               student.status === "Left"
                                 ? "bg-slate-200 text-slate-600"
-                                : student.shift === "Random"
+                                : student.shift === "Random" || student.seatNo === "FLOATING"
                                   ? "bg-rose-100 text-rose-800 border border-rose-200"
                                   : "bg-slate-900 text-white"
                             }`}
@@ -1823,7 +1839,7 @@ function LibraryView() {
                             )}
                             <button
                               type="button"
-                              title="View Payment History"
+                              title="View Payment History & Receipts"
                               onClick={() => handleOpenHistory(student)}
                               className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100 transition"
                             >
@@ -2194,21 +2210,20 @@ function LibraryView() {
                 </div>
                 <div>
                   <label className="text-xs font-semibold text-slate-500 mb-1 block">
-                    Seat No: {form.shift === "Random" && <span className="text-rose-500 font-normal">(Optional)</span>}
+                    Seat No: <span className="text-slate-400 font-normal">(Optional for Advance)</span>
                   </label>
                   <input
-                    required={form.shift !== "Random"}
-                    placeholder={form.shift === "Random" ? "Floating Seat" : "e.g. A01, B12"}
+                    placeholder="e.g. A01 ya WAITING / HOLD"
                     value={form.seatNo}
                     onChange={(e) => setForm({ ...form, seatNo: e.target.value })}
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold outline-none bg-white"
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold outline-none bg-white font-mono"
                   />
                 </div>
               </div>
 
               {form.shift === "Random" && (
                 <p className="text-[11px] text-slate-500 bg-slate-50 p-2 rounded-lg border border-slate-200">
-                  ℹ <strong>Random Shift:</strong> Is student ko koi fix seat allot nahi hogi (Floating Seating).
+                  ℹ <strong>Random Shift:</strong> Seat number khali chhodne par ise automatically floating seat allot ho jayegi.
                 </p>
               )}
 
@@ -2283,13 +2298,13 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: COLLECT FEE */}
+      {/* MODAL: COLLECT FEE (WITH CUSTOM / PARTIAL PAYMENT SUPPORT) */}
       {collectStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={submitCollectFee} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
             <h3 className="text-base font-bold text-slate-900">Collect Student Fee</h3>
             <p className="text-xs text-slate-500 mt-1">
-              Student: <strong className="text-slate-800">{collectStudent.name}</strong> ({collectStudent.shift === "Random" ? "Floating Seat" : `Seat ${collectStudent.seatNo}`})
+              Student: <strong className="text-slate-800">{collectStudent.name}</strong> ({collectStudent.shift === "Random" || collectStudent.seatNo === "FLOATING" ? "Floating Slot" : `Seat ${collectStudent.seatNo}`})
             </p>
 
             <div className="mt-4 space-y-3.5">
@@ -2310,7 +2325,11 @@ function LibraryView() {
                 <label className="block text-xs font-bold text-slate-700 mb-1.5">Select Duration (Months):</label>
                 <select
                   value={collectMonths}
-                  onChange={(e) => setCollectMonths(Number(e.target.value))}
+                  onChange={(e) => {
+                    const m = Number(e.target.value);
+                    setCollectMonths(m);
+                    setCustomAmount(String(collectStudent.monthlyFee * m));
+                  }}
                   className="w-full rounded-xl border border-slate-200 p-2 text-xs font-bold bg-slate-50 text-slate-900"
                 >
                   <option value={1}>1 Month (Current Cycle)</option>
@@ -2320,6 +2339,26 @@ function LibraryView() {
                   <option value={6}>6 Months (Half Year)</option>
                   <option value={12}>12 Months (Full Year)</option>
                 </select>
+              </div>
+
+              {/* 🟢 EDITABLE AMOUNT FOR PARTIAL / CUSTOM PAYMENT */}
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Paying Amount (₹):
+                  </label>
+                  <span className="text-[10px] text-indigo-600 font-semibold">(Aadhi fees / Partial allowed)</span>
+                </div>
+                <input
+                  type="number"
+                  required
+                  value={customAmount}
+                  onChange={(e) => setCustomAmount(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 p-2 text-sm font-black text-emerald-700 bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-500/20"
+                />
+                <span className="text-[10px] text-slate-400 mt-1 block">
+                  Standard Fee: {formatINR(collectStudent.monthlyFee * collectMonths)} ({collectMonths} Month)
+                </span>
               </div>
 
               <div>
@@ -2348,13 +2387,6 @@ function LibraryView() {
                     📱 UPI / Online
                   </button>
                 </div>
-              </div>
-
-              <div className="rounded-xl bg-slate-50 p-3.5 border border-slate-100 flex justify-between items-center">
-                <span className="text-xs text-slate-600 font-bold">Total Amount Receiving:</span>
-                <span className="text-base font-black text-emerald-700">
-                  {formatINR(collectStudent.monthlyFee * collectMonths)}
-                </span>
               </div>
             </div>
 
@@ -2476,15 +2508,15 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: PAYMENT HISTORY */}
+      {/* MODAL: PAYMENT HISTORY WITH DIRECT RE-DOWNLOAD PDF BUTTON */}
       {historyStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
             <div className="flex justify-between items-center border-b border-slate-100 pb-3">
               <div>
-                <h3 className="text-base font-bold text-slate-900">Payment History</h3>
+                <h3 className="text-base font-bold text-slate-900">Payment History & Receipts</h3>
                 <p className="text-xs text-slate-500">
-                  Student: <strong className="text-slate-800">{historyStudent.name}</strong> ({historyStudent.shift === "Random" ? "Floating Seat" : `Seat ${historyStudent.seatNo}`})
+                  Student: <strong className="text-slate-800">{historyStudent.name}</strong> ({historyStudent.shift === "Random" || historyStudent.seatNo === "FLOATING" ? "Floating Seat" : `Seat ${historyStudent.seatNo}`})
                 </p>
               </div>
               <button onClick={() => setHistoryStudent(null)} className="text-slate-400 hover:text-slate-600 font-bold">✕</button>
@@ -2500,7 +2532,7 @@ function LibraryView() {
                   {paymentHistory.map((item) => (
                     <div
                       key={item.id}
-                      className="p-3 rounded-xl border border-slate-200 bg-slate-50/70 flex items-center justify-between"
+                      className="p-3 rounded-xl border border-slate-200 bg-slate-50/70 flex items-center justify-between gap-3"
                     >
                       <div>
                         <div className="flex items-center gap-2">
@@ -2510,12 +2542,37 @@ function LibraryView() {
                           </span>
                         </div>
                         <p className="text-xs text-slate-500 mt-1 font-medium">
-                          Date: {formatDate(item.payment_date)} · {item.months_count} Month(s) Fee
+                          Date: {formatDate(item.payment_date)} · {item.months_count} Month(s) Duration
                         </p>
+                        {item.paid_until_date && (
+                          <p className="text-[11px] text-emerald-700 font-semibold mt-0.5">
+                            Valid Till: {formatDate(item.paid_until_date)}
+                          </p>
+                        )}
                       </div>
-                      <span className="text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-1 rounded-md">
-                        Paid
-                      </span>
+
+                      {/* 🟢 RE-DOWNLOAD RECEIPT PDF */}
+                      <button
+                        type="button"
+                        title="Download this Receipt again"
+                        onClick={() => {
+                          if (!historyStudent) return;
+                          downloadReceiptPDF(
+                            currentLib?.name || "LIBRARY MANAGEMENT",
+                            currentLib?.owner_name || "Manager",
+                            currentLib?.phone || "9301530783",
+                            historyStudent,
+                            item.amount_paid,
+                            item.months_count,
+                            item.payment_mode,
+                            item.payment_date,
+                            item.paid_until_date || undefined
+                          );
+                        }}
+                        className="rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-3 py-1.5 text-xs font-bold transition flex items-center gap-1 shadow-xs whitespace-nowrap active:scale-95"
+                      >
+                        <span>📥 PDF</span>
+                      </button>
                     </div>
                   ))}
                 </div>
