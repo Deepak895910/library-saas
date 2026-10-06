@@ -23,6 +23,7 @@ type Student = {
   dueDate: string;
   status: Status;
   pendingMonths: number;
+  balanceDue?: number;
 };
 
 type Inquiry = {
@@ -235,8 +236,9 @@ function downloadReceiptPDF(
   doc.setFont("helvetica", "normal");
   doc.setFontSize(7.5);
   doc.setTextColor(100, 116, 139);
-  doc.text("* Fee once paid is non-refundable.", 14, 150);
-  doc.text("* Maintain discipline inside library premises.", 14, 155);
+  doc.text("* Fee once paid is non-refundable.", 14, 146);
+  doc.text("* Maintain discipline inside library premises.", 14, 151);
+  doc.text("* Seat change is strictly not allowed.", 14, 156);
 
   doc.line(90, 172, 132, 172);
   doc.setFontSize(8);
@@ -265,15 +267,28 @@ function calculateMonthlyDue(
   const joinMonth = jParts[1] - 1;
   const joinDay = jParts[2] || 1;
 
-  let targetDue: Date;
-
   if (!lastPaidDateStr) {
-    targetDue = new Date(joinYear, joinMonth, joinDay);
-  } else {
-    const pParts = lastPaidDateStr.split("-").map(Number);
-    targetDue = new Date(pParts[0], pParts[1] - 1, pParts[2] || joinDay);
+    const firstDueDate = new Date(joinYear, joinMonth, joinDay);
+    firstDueDate.setHours(0, 0, 0, 0);
+
+    const dueDateText = firstDueDate.toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+
+    const diffTime = today.getTime() - firstDueDate.getTime();
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays > 30) {
+      const monthDiff = Math.max(2, Math.floor(diffDays / 30) + 1);
+      return { dueDateText, status: "Overdue", pendingMonths: monthDiff };
+    }
+    return { dueDateText, status: "Due Today", pendingMonths: 1 };
   }
 
+  const pParts = lastPaidDateStr.split("-").map(Number);
+  const targetDue = new Date(pParts[0], pParts[1] - 1, pParts[2] || joinDay);
   targetDue.setHours(0, 0, 0, 0);
 
   const dueDateText = targetDue.toLocaleDateString("en-IN", {
@@ -325,19 +340,16 @@ function LibraryView() {
   const [seatShiftView, setSeatShiftView] = useState<Shift | "All">("Morning");
   const [vacantShiftFilter, setVacantShiftFilter] = useState<Shift | "All">("All");
 
-  // Collect Fee State with Custom/Partial Amount
   const [collectStudent, setCollectStudent] = useState<Student | null>(null);
   const [collectMonths, setCollectMonths] = useState<number>(1);
   const [customAmount, setCustomAmount] = useState<string>("");
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("Cash");
   const [collectCustomDate, setCollectCustomDate] = useState<string>(getLocalDateString());
 
-  // History State
   const [historyStudent, setHistoryStudent] = useState<Student | null>(null);
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // Inquiries State
   const [showInquiryModal, setShowInquiryModal] = useState(false);
   const [editingInquiryId, setEditingInquiryId] = useState<string | null>(null);
   const [inquiryForm, setInquiryForm] = useState({
@@ -411,7 +423,6 @@ function LibraryView() {
     router.replace("/");
   };
 
-  // 🔐 STRICT AUTH GUARD
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -438,7 +449,6 @@ function LibraryView() {
     setIsAuthorized(true);
   }, [libId, router]);
 
-  // 📱 BACK-TO-EXIT TRAP
   useEffect(() => {
     if (typeof window === "undefined") return;
 
@@ -489,7 +499,6 @@ function LibraryView() {
     paymentSuccessData,
   ]);
 
-  // 🟢 LOAD CACHED DATA & AUTO FETCH
   const loadData = async () => {
     const targetId = libId || (typeof window !== "undefined" ? localStorage.getItem("active_library_id") : null);
     if (!targetId) return;
@@ -571,6 +580,7 @@ function LibraryView() {
           const joining = item.joining_date || item.due_date || todayStr;
           const lastPaid = item.last_paid_date || null;
           const { dueDateText, status, pendingMonths } = calculateMonthlyDue(joining, lastPaid, item.status);
+          const balance = Number(item.balance_due || 0);
 
           return {
             id: item.id,
@@ -583,8 +593,9 @@ function LibraryView() {
             lastPaidDate: lastPaid,
             lastPaymentMode: item.last_payment_mode || "Cash",
             dueDate: dueDateText,
-            status: status,
+            status: balance > 0 ? "Due Today" : status,
             pendingMonths: pendingMonths,
+            balanceDue: balance,
           };
         });
         setStudents(formattedStudents);
@@ -707,10 +718,12 @@ function LibraryView() {
   const dueToday = activeStudents.filter((s) => s.status === "Due Today");
   const overdue = activeStudents.filter((s) => s.status === "Overdue");
   const paid = activeStudents.filter((s) => s.status === "Paid");
-  const dueTotalAmount = [...dueToday, ...overdue].reduce(
-    (sum, s) => sum + s.monthlyFee * Math.max(1, s.pendingMonths),
-    0
-  );
+  
+  const dueTotalAmount = [...dueToday, ...overdue].reduce((sum, s) => {
+    if ((s.balanceDue || 0) > 0) return sum + s.balanceDue!;
+    return sum + s.monthlyFee * Math.max(1, s.pendingMonths);
+  }, 0);
+
   const monthRevenue = paid.reduce((sum, s) => sum + s.monthlyFee, 0);
 
   const filters: { id: Filter; label: string }[] = [
@@ -756,8 +769,16 @@ function LibraryView() {
   function reminderText(student: Student) {
     const libName = currentLib?.name || "LIBRARY MANAGEMENT";
     const owner = currentLib?.owner_name || "Owner";
-    const totalAmount = student.monthlyFee * Math.max(1, student.pendingMonths);
-    const monthsText = student.pendingMonths > 1 ? ` (${student.pendingMonths} Months Overdue)` : "";
+    const totalAmount =
+      (student.balanceDue || 0) > 0
+        ? student.balanceDue!
+        : student.monthlyFee * Math.max(1, student.pendingMonths);
+    const monthsText =
+      (student.balanceDue || 0) > 0
+        ? " (Partial Balance Remaining)"
+        : student.pendingMonths > 1
+          ? ` (${student.pendingMonths} Months Overdue)`
+          : "";
     const seatInfo =
       student.shift === "Random" || student.seatNo === "FLOATING"
         ? "Floating / Advance Slot"
@@ -925,6 +946,7 @@ function LibraryView() {
       "Joining Date",
       "Valid Until Date",
       "Payment Mode",
+      "Balance Due",
       "Status",
     ];
     const rows = students.map((s) => [
@@ -936,19 +958,19 @@ function LibraryView() {
       `"${s.joiningDate}"`,
       `"${s.lastPaidDate || "N/A"}"`,
       `"${s.lastPaymentMode || "Cash"}"`,
+      s.balanceDue || 0,
       `"${s.status}"`,
     ]);
 
     const csvContent =
       "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
     const encodedUri = encodeURI(csvContent);
-    const link = document.createElement("link");
-    const a = document.createElement("a");
-    a.setAttribute("href", encodedUri);
-    a.setAttribute("download", `${currentLib?.name || "Library"}_Students_${todayStr}.csv`);
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    const link = document.createElement("a");
+    link.setAttribute("href", encodedUri);
+    link.setAttribute("download", `${currentLib?.name || "Library"}_Students_${todayStr}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
     showToast("Excel/CSV export downloaded!");
   }
 
@@ -1018,17 +1040,16 @@ function LibraryView() {
     }
   }
 
-  // 🟢 COLLECT FEE INITIALIZER WITH CUSTOM AMOUNT
   function handleOpenCollect(student: Student) {
     const defaultMonths = Math.max(1, student.pendingMonths);
     setCollectStudent(student);
     setCollectMonths(defaultMonths);
-    setCustomAmount(String(student.monthlyFee * defaultMonths));
+    const defaultAmt = (student.balanceDue || 0) > 0 ? student.balanceDue! : student.monthlyFee * defaultMonths;
+    setCustomAmount(String(defaultAmt));
     setPaymentMode("Cash");
     setCollectCustomDate(getLocalDateString());
   }
 
-  // 🟢 OPEN PAYMENT HISTORY MODAL
   async function handleOpenHistory(student: Student) {
     setHistoryStudent(student);
     setLoadingHistory(true);
@@ -1047,15 +1068,18 @@ function LibraryView() {
     setLoadingHistory(false);
   }
 
-  // 🟢 MULTI-MONTH & CUSTOM / PARTIAL FEE COLLECTION HANDLER
   async function submitCollectFee(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
     if (!collectStudent || !currentLib?.id) return;
 
     const paymentDateUsed = collectCustomDate || getLocalDateString();
-    
-    // Cycle joining date se calculate hogi
+    const currentTotalReq = collectStudent.monthlyFee * collectMonths;
+    const totalCollected = Number(customAmount) > 0 ? Number(customAmount) : currentTotalReq;
+
+    const currentOldBalance = collectStudent.balanceDue || 0;
+    const newBalanceDue = Math.max(0, currentOldBalance + currentTotalReq - totalCollected);
+
     const jParts = (collectStudent.joiningDate || todayStr).split("-").map(Number);
     const joinDay = jParts[2] || 1;
 
@@ -1067,19 +1091,13 @@ function LibraryView() {
       baseCycleDate = new Date(jParts[0], jParts[1] - 1, joinDay);
     }
 
-    const paidUntil = new Date(
-      baseCycleDate.getFullYear(),
-      baseCycleDate.getMonth() + collectMonths,
-      1
-    );
-    const maxDays = new Date(paidUntil.getFullYear(), paidUntil.getMonth() + 1, 0).getDate();
-    paidUntil.setDate(Math.min(joinDay, maxDays));
-    const paidUntilStr = getLocalDateString(paidUntil);
-
-    // 🟢 Custom / Partial Amount support
-    const totalCollected = Number(customAmount) > 0 
-      ? Number(customAmount) 
-      : collectStudent.monthlyFee * collectMonths;
+    let paidUntilStr = collectStudent.lastPaidDate;
+    if (newBalanceDue === 0) {
+      const paidUntil = new Date(baseCycleDate.getFullYear(), baseCycleDate.getMonth() + collectMonths, 1);
+      const maxDays = new Date(paidUntil.getFullYear(), paidUntil.getMonth() + 1, 0).getDate();
+      paidUntil.setDate(Math.min(joinDay, maxDays));
+      paidUntilStr = getLocalDateString(paidUntil);
+    }
 
     const targetStudent = collectStudent;
     const chosenMode = paymentMode;
@@ -1088,7 +1106,8 @@ function LibraryView() {
     const { error: studentError } = await supabase
       .from("students")
       .update({
-        status: "paid",
+        status: newBalanceDue > 0 ? "due" : "paid",
+        balance_due: newBalanceDue,
         last_paid_date: paidUntilStr,
         last_payment_mode: chosenMode,
       })
@@ -1117,10 +1136,7 @@ function LibraryView() {
       console.warn("Ledger insert error:", err);
     }
 
-    const { dueDateText, status } = calculateMonthlyDue(
-      targetStudent.joiningDate,
-      paidUntilStr
-    );
+    const { dueDateText, status } = calculateMonthlyDue(targetStudent.joiningDate, paidUntilStr);
 
     setStudents((prev) =>
       prev.map((s) =>
@@ -1130,15 +1146,20 @@ function LibraryView() {
               lastPaidDate: paidUntilStr,
               lastPaymentMode: chosenMode,
               dueDate: dueDateText,
-              status: status,
-              pendingMonths: 0,
+              status: newBalanceDue > 0 ? ("Due Today" as Status) : status,
+              pendingMonths: newBalanceDue > 0 ? 1 : 0,
+              balanceDue: newBalanceDue,
             }
           : s
       )
     );
 
     setCollectStudent(null);
-    showToast(`Fees successfully collect ho gayi (${formatINR(totalCollected)})!`);
+    showToast(
+      newBalanceDue > 0
+        ? `Partial fees (${formatINR(totalCollected)}) jama hui! Balance: ${formatINR(newBalanceDue)}`
+        : `Fees successfully collect ho gayi (${formatINR(totalCollected)})!`
+    );
 
     try {
       downloadReceiptPDF(
@@ -1150,7 +1171,7 @@ function LibraryView() {
         countMonths,
         chosenMode,
         paymentDateUsed,
-        paidUntilStr
+        paidUntilStr || undefined
       );
     } catch (pdfErr) {
       console.error("PDF generation error:", pdfErr);
@@ -1163,9 +1184,11 @@ function LibraryView() {
 
     const waText = `Namaste ${targetStudent.name},\n\nWe have received your library fee payment of ${formatINR(
       totalCollected
-    )} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}) on ${formatDate(paymentDateUsed)}.\n\nYour seat is valid till ${formatDate(paidUntilStr)}.\n\nThank you,\n${
-      currentLib.name || "LIBRARY MANAGEMENT"
-    }`;
+    )} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}) on ${formatDate(paymentDateUsed)}.\n\n${
+      newBalanceDue > 0
+        ? `Note: Remaining partial balance is ${formatINR(newBalanceDue)}.`
+        : `Your seat is valid till ${formatDate(paidUntilStr)}.`
+    }\n\nThank you,\n${currentLib.name || "LIBRARY MANAGEMENT"}`;
     const waUrl = `https://wa.me/91${targetStudent.phone}?text=${encodeURIComponent(waText)}`;
 
     setPaymentSuccessData({
@@ -1175,7 +1198,7 @@ function LibraryView() {
       mode: chosenMode,
       waUrl: waUrl,
       paymentDate: paymentDateUsed,
-      paidUntilDate: paidUntilStr,
+      paidUntilDate: paidUntilStr || todayStr,
     });
 
     window.open(waUrl, "_blank", "noopener,noreferrer");
@@ -1216,10 +1239,10 @@ function LibraryView() {
 
     try {
       const isRandom = form.shift === "Random";
-      // Allow Advance / Floating seating even if seat is left empty
-      const seatNo = isRandom || !form.seatNo.trim()
-        ? (form.seatNo.trim().toUpperCase() || "FLOATING")
-        : form.seatNo.trim().toUpperCase();
+      const seatNo =
+        isRandom || !form.seatNo.trim()
+          ? form.seatNo.trim().toUpperCase() || "FLOATING"
+          : form.seatNo.trim().toUpperCase();
 
       const fee = Number(form.monthlyFee) || 600;
       const cleanPhone = form.phone.replace(/\D/g, "").slice(-10);
@@ -1254,6 +1277,7 @@ function LibraryView() {
         due_date: dueDateText,
         last_paid_date: null,
         status: "due",
+        balance_due: 0,
         library_id: currentLib?.id,
       };
 
@@ -1275,6 +1299,7 @@ function LibraryView() {
                   lastPaidDate: null,
                   status: "Due Today",
                   pendingMonths: 1,
+                  balanceDue: 0,
                 }
               : s
           )
@@ -1349,6 +1374,7 @@ function LibraryView() {
             dueDate: dueDateText,
             status: "Due Today",
             pendingMonths: 1,
+            balanceDue: 0,
           },
           ...prev,
         ]);
@@ -1642,7 +1668,10 @@ function LibraryView() {
                 const occupant = seatGridOccupantMap.get(seatNum.toUpperCase());
 
                 if (occupant) {
-                  const isDue = occupant.status === "Due Today" || occupant.status === "Overdue";
+                  const isDue =
+                    occupant.status === "Due Today" ||
+                    occupant.status === "Overdue" ||
+                    (occupant.balanceDue || 0) > 0;
                   return (
                     <div
                       key={seatNum}
@@ -1664,7 +1693,7 @@ function LibraryView() {
                           isDue ? "bg-amber-200 text-amber-900" : "bg-rose-200 text-rose-900"
                         }`}
                       >
-                        {occupant.status}
+                        {(occupant.balanceDue || 0) > 0 ? "Partial" : occupant.status}
                       </span>
                     </div>
                   );
@@ -1792,6 +1821,15 @@ function LibraryView() {
                         <td className="px-5 py-3.5">
                           {student.status === "Left" ? (
                             <span className="text-slate-400">Vacated</span>
+                          ) : (student.balanceDue || 0) > 0 ? (
+                            <div>
+                              <span className="font-black text-rose-700">
+                                {formatINR(student.balanceDue!)}
+                              </span>
+                              <span className="block text-[10px] text-amber-700 font-bold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 mt-0.5 w-max">
+                                Partial Balance
+                              </span>
+                            </div>
                           ) : student.status === "Paid" ? (
                             <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
                               All Clear
@@ -1810,8 +1848,10 @@ function LibraryView() {
                           )}
                         </td>
                         <td className="px-5 py-3.5">
-                          <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-bold ${statusBadge(student.status)}`}>
-                            {student.status}
+                          <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
+                            (student.balanceDue || 0) > 0 ? "bg-amber-100 text-amber-800 border border-amber-300 font-bold" : statusBadge(student.status)
+                          }`}>
+                            {(student.balanceDue || 0) > 0 ? "Partial" : student.status}
                           </span>
                         </td>
                         <td className="px-5 py-3.5 text-center">
@@ -1826,15 +1866,13 @@ function LibraryView() {
                                 >
                                   💬 WA
                                 </button>
-                                {student.status !== "Paid" && (
-                                  <button
-                                    type="button"
-                                    onClick={() => handleOpenCollect(student)}
-                                    className="rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-indigo-700 transition shadow-xs"
-                                  >
-                                    Collect ₹
-                                  </button>
-                                )}
+                                <button
+                                  type="button"
+                                  onClick={() => handleOpenCollect(student)}
+                                  className="rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-indigo-700 transition shadow-xs"
+                                >
+                                  Collect ₹
+                                </button>
                               </>
                             )}
                             <button
@@ -2298,7 +2336,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: COLLECT FEE (WITH CUSTOM / PARTIAL PAYMENT SUPPORT) */}
+      {/* MODAL: COLLECT FEE */}
       {collectStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={submitCollectFee} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
@@ -2328,7 +2366,8 @@ function LibraryView() {
                   onChange={(e) => {
                     const m = Number(e.target.value);
                     setCollectMonths(m);
-                    setCustomAmount(String(collectStudent.monthlyFee * m));
+                    const def = (collectStudent.balanceDue || 0) > 0 ? collectStudent.balanceDue! : collectStudent.monthlyFee * m;
+                    setCustomAmount(String(def));
                   }}
                   className="w-full rounded-xl border border-slate-200 p-2 text-xs font-bold bg-slate-50 text-slate-900"
                 >
@@ -2341,7 +2380,6 @@ function LibraryView() {
                 </select>
               </div>
 
-              {/* 🟢 EDITABLE AMOUNT FOR PARTIAL / CUSTOM PAYMENT */}
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="block text-xs font-bold text-slate-700">
@@ -2357,7 +2395,9 @@ function LibraryView() {
                   className="w-full rounded-xl border border-slate-200 p-2 text-sm font-black text-emerald-700 bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-500/20"
                 />
                 <span className="text-[10px] text-slate-400 mt-1 block">
-                  Standard Fee: {formatINR(collectStudent.monthlyFee * collectMonths)} ({collectMonths} Month)
+                  {(collectStudent.balanceDue || 0) > 0 
+                    ? `Pending Balance Due: ${formatINR(collectStudent.balanceDue!)}`
+                    : `Standard Fee: ${formatINR(collectStudent.monthlyFee * collectMonths)} (${collectMonths} Month)`}
                 </span>
               </div>
 
@@ -2508,7 +2548,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: PAYMENT HISTORY WITH DIRECT RE-DOWNLOAD PDF BUTTON */}
+      {/* MODAL: PAYMENT HISTORY */}
       {historyStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
@@ -2551,7 +2591,6 @@ function LibraryView() {
                         )}
                       </div>
 
-                      {/* 🟢 RE-DOWNLOAD RECEIPT PDF */}
                       <button
                         type="button"
                         title="Download this Receipt again"
