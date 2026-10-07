@@ -340,9 +340,15 @@ function LibraryView() {
   const [seatShiftView, setSeatShiftView] = useState<Shift | "All">("Morning");
   const [vacantShiftFilter, setVacantShiftFilter] = useState<Shift | "All">("All");
 
+  // Multi-Selection State for Bulk Actions
+  const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
+  const [bulkProcessing, setBulkProcessing] = useState(false);
+
+  // Single Collect Modal State
   const [collectStudent, setCollectStudent] = useState<Student | null>(null);
   const [collectMonths, setCollectMonths] = useState<number>(1);
   const [customAmount, setCustomAmount] = useState<string>("");
+  const [isFullSettlement, setIsFullSettlement] = useState<boolean>(false);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("Cash");
   const [collectCustomDate, setCollectCustomDate] = useState<string>(getLocalDateString());
 
@@ -1040,14 +1046,128 @@ function LibraryView() {
     }
   }
 
+  // 🟢 SELECTION TOGGLES
+  function toggleSelectAll() {
+    if (selectedStudentIds.length === filtered.length) {
+      setSelectedStudentIds([]);
+    } else {
+      setSelectedStudentIds(filtered.map((s) => s.id));
+    }
+  }
+
+  function toggleSelectStudent(id: string) {
+    setSelectedStudentIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  }
+
+  // 🟢 CYCLE-BASED BULK MARK PAID (First-time joining date + Renewal handling)
+  async function handleBulkMarkPaid() {
+    if (selectedStudentIds.length === 0) return;
+    if (!checkOnlineStatus()) return;
+    if (
+      !confirm(
+        `Kya aap selected ${selectedStudentIds.length} students ko Paid mark karna chahte hain? Sabhi students ka cycle unki personal joining date ke hisaab se update hoga.`
+      )
+    )
+      return;
+
+    setBulkProcessing(true);
+    try {
+      const today = getLocalDateString();
+      const studentsToUpdate = students.filter((s) => selectedStudentIds.includes(s.id));
+
+      const ledgerInserts: any[] = [];
+      const updatedMap = new Map<string, Partial<Student>>();
+
+      for (const s of studentsToUpdate) {
+        const isFirstPayment = !s.lastPaidDate;
+        const paymentDateUsed = isFirstPayment && s.joiningDate ? s.joiningDate : today;
+
+        const jParts = (s.joiningDate || today).split("-").map(Number);
+        const joinDay = jParts[2] || 1;
+
+        let baseCycleDate: Date;
+        if (s.lastPaidDate) {
+          const lp = s.lastPaidDate.split("-").map(Number);
+          baseCycleDate = new Date(lp[0], lp[1] - 1, lp[2] || joinDay);
+        } else {
+          baseCycleDate = new Date(jParts[0], jParts[1] - 1, joinDay);
+        }
+
+        const paidUntil = new Date(baseCycleDate.getFullYear(), baseCycleDate.getMonth() + 1, 1);
+        const maxDays = new Date(paidUntil.getFullYear(), paidUntil.getMonth() + 1, 0).getDate();
+        paidUntil.setDate(Math.min(joinDay, maxDays));
+        const paidUntilStr = getLocalDateString(paidUntil);
+
+        ledgerInserts.push({
+          library_id: currentLib?.id,
+          student_id: s.id,
+          student_name: s.name,
+          seat_no: s.seatNo || "FLOATING",
+          amount_paid: s.monthlyFee,
+          months_count: 1,
+          payment_mode: "Cash",
+          payment_date: paymentDateUsed,
+          paid_until_date: paidUntilStr,
+        });
+
+        const { dueDateText, status } = calculateMonthlyDue(s.joiningDate, paidUntilStr);
+
+        updatedMap.set(s.id, {
+          status: status,
+          lastPaidDate: paidUntilStr,
+          lastPaymentMode: "Cash",
+          dueDate: dueDateText,
+          balanceDue: 0,
+          pendingMonths: 0,
+        });
+
+        await supabase
+          .from("students")
+          .update({
+            status: "paid",
+            balance_due: 0,
+            last_paid_date: paidUntilStr,
+            last_payment_mode: "Cash",
+          })
+          .eq("id", s.id);
+      }
+
+      if (ledgerInserts.length > 0) {
+        await supabase.from("fee_payments").insert(ledgerInserts);
+      }
+
+      setStudents((prev) =>
+        prev.map((s) => {
+          const updated = updatedMap.get(s.id);
+          return updated ? ({ ...s, ...updated } as Student) : s;
+        })
+      );
+
+      setSelectedStudentIds([]);
+      showToast(`✓ ${studentsToUpdate.length} students successfully mark paid ho gaye!`);
+    } catch (err: any) {
+      alert("Bulk payment me error: " + (err.message || "Unknown error"));
+    } finally {
+      setBulkProcessing(false);
+    }
+  }
+
+  // 🟢 SINGLE COLLECT MODAL INITIALIZER
   function handleOpenCollect(student: Student) {
     const defaultMonths = Math.max(1, student.pendingMonths);
     setCollectStudent(student);
     setCollectMonths(defaultMonths);
-    const defaultAmt = (student.balanceDue || 0) > 0 ? student.balanceDue! : student.monthlyFee * defaultMonths;
+    const defaultAmt =
+      (student.balanceDue || 0) > 0 ? student.balanceDue! : student.monthlyFee * defaultMonths;
     setCustomAmount(String(defaultAmt));
+    setIsFullSettlement(false);
     setPaymentMode("Cash");
-    setCollectCustomDate(getLocalDateString());
+
+    // First time pay karne par automatic joining date fill karein
+    const isFirstTime = !student.lastPaidDate;
+    setCollectCustomDate(isFirstTime && student.joiningDate ? student.joiningDate : getLocalDateString());
   }
 
   async function handleOpenHistory(student: Student) {
@@ -1077,8 +1197,11 @@ function LibraryView() {
     const currentTotalReq = collectStudent.monthlyFee * collectMonths;
     const totalCollected = Number(customAmount) > 0 ? Number(customAmount) : currentTotalReq;
 
+    // Concession / Full Settlement check: agar ticked hai toh balance 0 maane
     const currentOldBalance = collectStudent.balanceDue || 0;
-    const newBalanceDue = Math.max(0, currentOldBalance + currentTotalReq - totalCollected);
+    const newBalanceDue = isFullSettlement
+      ? 0
+      : Math.max(0, currentOldBalance + currentTotalReq - totalCollected);
 
     const jParts = (collectStudent.joiningDate || todayStr).split("-").map(Number);
     const joinDay = jParts[2] || 1;
@@ -1436,7 +1559,7 @@ function LibraryView() {
   }
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 pb-24 md:pb-12 font-sans antialiased">
+    <div className="min-h-screen bg-[#F8FAFC] text-slate-900 pb-28 md:pb-12 font-sans antialiased">
       {!isOnline && (
         <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-slate-950 text-xs font-bold py-1.5 px-4 text-center sticky top-0 z-50 shadow-sm flex items-center justify-center gap-2">
           <span>⚡ Offline Mode:</span>
@@ -1715,7 +1838,7 @@ function LibraryView() {
           </div>
         )}
 
-        {/* TAB 2: STUDENTS TABLE */}
+        {/* TAB 2: STUDENTS TABLE WITH CHECKBOX & BULK ACTIONS */}
         {activeTab === "students" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
             <div className="flex flex-col gap-4 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
@@ -1744,10 +1867,19 @@ function LibraryView() {
             </div>
 
             <div className="overflow-x-auto">
-              <table className="min-w-[1240px] w-full text-left text-xs">
+              <table className="min-w-[1260px] w-full text-left text-xs">
                 <thead className="bg-slate-50/80 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200/70">
                   <tr>
-                    <th className="px-5 py-3.5 font-bold">Seat No</th>
+                    <th className="px-3 py-3.5 w-10 text-center">
+                      <input
+                        type="checkbox"
+                        checked={filtered.length > 0 && selectedStudentIds.length === filtered.length}
+                        onChange={toggleSelectAll}
+                        className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                        title="Select All Students"
+                      />
+                    </th>
+                    <th className="px-4 py-3.5 font-bold">Seat No</th>
                     <th className="px-5 py-3.5 font-bold">Student Name</th>
                     <th className="px-5 py-3.5 font-bold">Phone & Contact</th>
                     <th className="px-5 py-3.5 font-bold">Shift</th>
@@ -1762,157 +1894,173 @@ function LibraryView() {
                 <tbody className="divide-y divide-slate-100 font-medium">
                   {loading && students.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="px-5 py-10 text-center text-slate-400">Loading data...</td>
+                      <td colSpan={11} className="px-5 py-10 text-center text-slate-400">Loading data...</td>
                     </tr>
                   ) : filtered.length === 0 ? (
                     <tr>
-                      <td colSpan={10} className="px-5 py-10 text-center text-slate-500">Koi student nahi mila.</td>
+                      <td colSpan={11} className="px-5 py-10 text-center text-slate-500">Koi student nahi mila.</td>
                     </tr>
                   ) : (
-                    filtered.map((student) => (
-                      <tr key={student.id} className="hover:bg-slate-50/80 transition">
-                        <td className="px-5 py-3.5">
-                          <span
-                            className={`inline-flex min-w-[3.25rem] items-center justify-center rounded-lg px-2.5 py-1 font-mono font-black ${
-                              student.status === "Left"
-                                ? "bg-slate-200 text-slate-600"
-                                : student.shift === "Random" || student.seatNo === "FLOATING"
-                                  ? "bg-rose-100 text-rose-800 border border-rose-200"
-                                  : "bg-slate-900 text-white"
-                            }`}
-                          >
-                            {student.seatNo}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 font-bold text-slate-900">{student.name}</td>
-                        <td className="px-5 py-3.5 tabular-nums text-slate-600">
-                          <div className="flex items-center gap-2">
-                            <span className="font-semibold">{student.phone}</span>
-                            <a
-                              href={`tel:${student.phone}`}
-                              title="Call Student"
-                              className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-200 text-xs font-bold"
+                    filtered.map((student) => {
+                      const isSelected = selectedStudentIds.includes(student.id);
+                      return (
+                        <tr
+                          key={student.id}
+                          className={`hover:bg-slate-50/80 transition ${
+                            isSelected ? "bg-indigo-50/40" : ""
+                          }`}
+                        >
+                          <td className="px-3 py-3.5 text-center">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelectStudent(student.id)}
+                              className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                            />
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <span
+                              className={`inline-flex min-w-[3.25rem] items-center justify-center rounded-lg px-2.5 py-1 font-mono font-black ${
+                                student.status === "Left"
+                                  ? "bg-slate-200 text-slate-600"
+                                  : student.shift === "Random" || student.seatNo === "FLOATING"
+                                    ? "bg-rose-100 text-rose-800 border border-rose-200"
+                                    : "bg-slate-900 text-white"
+                              }`}
                             >
-                              📞
-                            </a>
-                          </div>
-                        </td>
-                        <td className="px-5 py-3.5">
-                          <span className={`inline-flex rounded-md px-2.5 py-0.5 text-[10px] font-bold ${shiftBadge(student.shift)}`}>
-                            {student.shift}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 font-extrabold text-slate-900">{formatINR(student.monthlyFee)}</td>
-                        <td className="px-5 py-3.5 text-slate-500">{formatDate(student.joiningDate)}</td>
-                        <td className="px-5 py-3.5">
-                          {student.lastPaidDate ? (
-                            <div>
-                              <span className="font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-md inline-block">
-                                {formatDate(student.lastPaidDate)}
-                              </span>
-                              <span className="block text-[10px] text-slate-400 mt-0.5 font-medium">
-                                Mode: {student.lastPaymentMode || "Cash"}
-                              </span>
-                            </div>
-                          ) : (
-                            <span className="text-slate-400 italic">Never / New</span>
-                          )}
-                        </td>
-                        <td className="px-5 py-3.5">
-                          {student.status === "Left" ? (
-                            <span className="text-slate-400">Vacated</span>
-                          ) : (student.balanceDue || 0) > 0 ? (
-                            <div>
-                              <span className="font-black text-rose-700">
-                                {formatINR(student.balanceDue!)}
-                              </span>
-                              <span className="block text-[10px] text-amber-700 font-bold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 mt-0.5 w-max">
-                                Partial Balance
-                              </span>
-                            </div>
-                          ) : student.status === "Paid" ? (
-                            <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
-                              All Clear
+                              {student.seatNo}
                             </span>
-                          ) : (
-                            <div>
-                              <span className="font-black text-rose-700">
-                                {formatINR(student.monthlyFee * Math.max(1, student.pendingMonths))}
-                              </span>
-                              {student.pendingMonths > 1 && (
-                                <span className="block text-[10px] text-rose-600 font-bold">
-                                  ({student.pendingMonths} Months Overdue)
+                          </td>
+                          <td className="px-5 py-3.5 font-bold text-slate-900">{student.name}</td>
+                          <td className="px-5 py-3.5 tabular-nums text-slate-600">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold">{student.phone}</span>
+                              <a
+                                href={`tel:${student.phone}`}
+                                title="Call Student"
+                                className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-indigo-50 text-indigo-600 hover:bg-indigo-100 border border-indigo-200 text-xs font-bold"
+                              >
+                                📞
+                              </a>
+                            </div>
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span className={`inline-flex rounded-md px-2.5 py-0.5 text-[10px] font-bold ${shiftBadge(student.shift)}`}>
+                              {student.shift}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 font-extrabold text-slate-900">{formatINR(student.monthlyFee)}</td>
+                          <td className="px-5 py-3.5 text-slate-500">{formatDate(student.joiningDate)}</td>
+                          <td className="px-5 py-3.5">
+                            {student.lastPaidDate ? (
+                              <div>
+                                <span className="font-bold text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-0.5 rounded-md inline-block">
+                                  {formatDate(student.lastPaidDate)}
                                 </span>
+                                <span className="block text-[10px] text-slate-400 mt-0.5 font-medium">
+                                  Mode: {student.lastPaymentMode || "Cash"}
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="text-slate-400 italic">Never / New</span>
+                            )}
+                          </td>
+                          <td className="px-5 py-3.5">
+                            {student.status === "Left" ? (
+                              <span className="text-slate-400">Vacated</span>
+                            ) : (student.balanceDue || 0) > 0 ? (
+                              <div>
+                                <span className="font-black text-rose-700">
+                                  {formatINR(student.balanceDue!)}
+                                </span>
+                                <span className="block text-[10px] text-amber-700 font-bold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200 mt-0.5 w-max">
+                                  Partial Balance
+                                </span>
+                              </div>
+                            ) : student.status === "Paid" ? (
+                              <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                                All Clear
+                              </span>
+                            ) : (
+                              <div>
+                                <span className="font-black text-rose-700">
+                                  {formatINR(student.monthlyFee * Math.max(1, student.pendingMonths))}
+                                </span>
+                                {student.pendingMonths > 1 && (
+                                  <span className="block text-[10px] text-rose-600 font-bold">
+                                    ({student.pendingMonths} Months Overdue)
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
+                              (student.balanceDue || 0) > 0 ? "bg-amber-100 text-amber-800 border border-amber-300 font-bold" : statusBadge(student.status)
+                            }`}>
+                              {(student.balanceDue || 0) > 0 ? "Partial" : student.status}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              {student.status !== "Left" && (
+                                <>
+                                  <button
+                                    type="button"
+                                    title="Send WhatsApp Reminder"
+                                    onClick={() => openWhatsApp(student)}
+                                    className="rounded-lg bg-emerald-500 px-2.5 py-1 text-xs font-bold text-white hover:bg-emerald-600 transition shadow-xs"
+                                  >
+                                    💬 WA
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenCollect(student)}
+                                    className="rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-indigo-700 transition shadow-xs"
+                                  >
+                                    Collect ₹
+                                  </button>
+                                </>
+                              )}
+                              <button
+                                type="button"
+                                title="View Payment History & Receipts"
+                                onClick={() => handleOpenHistory(student)}
+                                className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100 transition"
+                              >
+                                📜 History
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEdit(student)}
+                                className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition"
+                              >
+                                Edit
+                              </button>
+                              {student.status !== "Left" ? (
+                                <button
+                                  type="button"
+                                  title="Mark Left / Vacate Seat"
+                                  onClick={() => handleMarkLeft(student)}
+                                  className="rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100 transition"
+                                >
+                                  Vacate
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  title="Delete Permanently"
+                                  onClick={() => handleDelete(student.id, student.name)}
+                                  className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-bold text-red-600 hover:bg-red-100 transition"
+                                >
+                                  ✕
+                                </button>
                               )}
                             </div>
-                          )}
-                        </td>
-                        <td className="px-5 py-3.5">
-                          <span className={`inline-flex rounded-full px-2.5 py-0.5 text-[10px] font-bold ${
-                            (student.balanceDue || 0) > 0 ? "bg-amber-100 text-amber-800 border border-amber-300 font-bold" : statusBadge(student.status)
-                          }`}>
-                            {(student.balanceDue || 0) > 0 ? "Partial" : student.status}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            {student.status !== "Left" && (
-                              <>
-                                <button
-                                  type="button"
-                                  title="Send WhatsApp Reminder"
-                                  onClick={() => openWhatsApp(student)}
-                                  className="rounded-lg bg-emerald-500 px-2.5 py-1 text-xs font-bold text-white hover:bg-emerald-600 transition shadow-xs"
-                                >
-                                  💬 WA
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => handleOpenCollect(student)}
-                                  className="rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-indigo-700 transition shadow-xs"
-                                >
-                                  Collect ₹
-                                </button>
-                              </>
-                            )}
-                            <button
-                              type="button"
-                              title="View Payment History & Receipts"
-                              onClick={() => handleOpenHistory(student)}
-                              className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-bold text-slate-700 hover:bg-slate-100 transition"
-                            >
-                              📜 History
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEdit(student)}
-                              className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition"
-                            >
-                              Edit
-                            </button>
-                            {student.status !== "Left" ? (
-                              <button
-                                type="button"
-                                title="Mark Left / Vacate Seat"
-                                onClick={() => handleMarkLeft(student)}
-                                className="rounded-lg border border-amber-300 bg-amber-50 px-2 py-1 text-xs font-bold text-amber-800 hover:bg-amber-100 transition"
-                              >
-                                Vacate
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                title="Delete Permanently"
-                                onClick={() => handleDelete(student.id, student.name)}
-                                className="rounded-lg border border-red-200 bg-red-50 px-2.5 py-1 text-xs font-bold text-red-600 hover:bg-red-100 transition"
-                              >
-                                ✕
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -2050,8 +2198,39 @@ function LibraryView() {
         )}
       </main>
 
+      {/* 🟢 FLOATING BULK ACTIONS TOOLBAR */}
+      {selectedStudentIds.length > 0 && (
+        <aside aria-label="Bulk actions toolbar" className="fixed bottom-16 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-4 border border-slate-700 backdrop-blur-md animate-in fade-in slide-in-from-bottom-3">
+          <div className="flex items-center gap-2">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-[11px] font-black">
+              {selectedStudentIds.length}
+            </span>
+            <span className="text-xs font-bold text-slate-300">Selected</span>
+          </div>
+
+          <div className="h-4 w-px bg-slate-700" />
+
+          <button
+            type="button"
+            disabled={bulkProcessing}
+            onClick={handleBulkMarkPaid}
+            className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-xs font-bold px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+          >
+            <span>{bulkProcessing ? "Processing..." : "⚡ Mark Paid (Cycle Date)"}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSelectedStudentIds([])}
+            className="text-xs text-slate-400 hover:text-white font-semibold transition"
+          >
+            Clear
+          </button>
+        </aside>
+      )}
+
       {/* MOBILE BOTTOM NAVIGATION */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-6 py-2.5 flex justify-between items-center shadow-lg">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-6 py-2.5 flex justify-between items-center shadow-lg">
         <button
           onClick={() => setActiveTab("students")}
           className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
@@ -2336,7 +2515,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: COLLECT FEE */}
+      {/* MODAL: COLLECT FEE (WITH DISCOUNT / CONCESSION TOGGLE) */}
       {collectStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={submitCollectFee} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
@@ -2349,7 +2528,9 @@ function LibraryView() {
               <div>
                 <div className="flex items-center justify-between mb-1.5">
                   <label className="text-xs font-bold text-slate-700">Payment Date Received:</label>
-                  <span className="text-[10px] text-indigo-600 font-semibold">(Auto today)</span>
+                  <span className="text-[10px] text-indigo-600 font-semibold">
+                    {!collectStudent.lastPaidDate ? "(Auto Joining Date)" : "(Auto Today)"}
+                  </span>
                 </div>
                 <input
                   type="date"
@@ -2385,7 +2566,7 @@ function LibraryView() {
                   <label className="block text-xs font-bold text-slate-700">
                     Paying Amount (₹):
                   </label>
-                  <span className="text-[10px] text-indigo-600 font-semibold">(Aadhi fees / Partial allowed)</span>
+                  <span className="text-[10px] text-indigo-600 font-semibold">(Custom allowed)</span>
                 </div>
                 <input
                   type="number"
@@ -2399,6 +2580,20 @@ function LibraryView() {
                     ? `Pending Balance Due: ${formatINR(collectStudent.balanceDue!)}`
                     : `Standard Fee: ${formatINR(collectStudent.monthlyFee * collectMonths)} (${collectMonths} Month)`}
                 </span>
+              </div>
+
+              {/* 🟢 DISCOUNT / CONCESSION TOGGLE */}
+              <div className="flex items-center gap-2 p-2 bg-slate-50 rounded-xl border border-slate-200">
+                <input
+                  type="checkbox"
+                  id="fullSettlementToggle"
+                  checked={isFullSettlement}
+                  onChange={(e) => setIsFullSettlement(e.target.checked)}
+                  className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                />
+                <label htmlFor="fullSettlementToggle" className="text-[11px] text-slate-700 font-semibold cursor-pointer select-none">
+                  Discount / Concession (Bacha balance due na bane)
+                </label>
               </div>
 
               <div>
