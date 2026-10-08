@@ -47,6 +47,16 @@ type PaymentRecord = {
   created_at: string;
 };
 
+type ExpenseRecord = {
+  id: string;
+  library_id: string;
+  title: string;
+  amount: number;
+  category: string;
+  expense_date: string;
+  created_at: string;
+};
+
 type LibraryInfo = {
   id: string;
   name: string;
@@ -315,13 +325,14 @@ function LibraryView() {
   const searchParams = useSearchParams();
   const libId = searchParams.get("id");
 
-  const [activeTab, setActiveTab] = useState<"students" | "seats" | "inquiries">("students");
+  const [activeTab, setActiveTab] = useState<"students" | "seats" | "inquiries" | "expenses">("students");
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(true);
   const [currentLib, setCurrentLib] = useState<LibraryInfo | null>(null);
   const [isLibraryActive, setIsLibraryActive] = useState<boolean | null>(null);
   const [students, setStudents] = useState<Student[]>([]);
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
+  const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -355,6 +366,15 @@ function LibraryView() {
   const [historyStudent, setHistoryStudent] = useState<Student | null>(null);
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Expense Modal State
+  const [showExpenseModal, setShowExpenseModal] = useState(false);
+  const [expenseForm, setExpenseForm] = useState({
+    title: "",
+    amount: "",
+    category: "Rent",
+    expense_date: getLocalDateString(),
+  });
 
   const [showInquiryModal, setShowInquiryModal] = useState(false);
   const [editingInquiryId, setEditingInquiryId] = useState<string | null>(null);
@@ -412,7 +432,7 @@ function LibraryView() {
 
   const checkOnlineStatus = (): boolean => {
     if (typeof window !== "undefined" && !navigator.onLine) {
-      alert("⚠️ Internet band hai! Naya admission lene ya fees collect karne ke liye kripya internet on karein.");
+      alert("⚠️ Internet band hai! Kripya internet on karein.");
       return false;
     }
     return true;
@@ -466,6 +486,7 @@ function LibraryView() {
         showVacantModal ||
         showInquiryModal ||
         showBroadcastModal ||
+        showExpenseModal ||
         collectStudent ||
         historyStudent ||
         paymentSuccessData
@@ -474,6 +495,7 @@ function LibraryView() {
         setShowVacantModal(false);
         setShowInquiryModal(false);
         setShowBroadcastModal(false);
+        setShowExpenseModal(false);
         setEditingInquiryId(null);
         setCollectStudent(null);
         setHistoryStudent(null);
@@ -500,6 +522,7 @@ function LibraryView() {
     showVacantModal,
     showInquiryModal,
     showBroadcastModal,
+    showExpenseModal,
     collectStudent,
     historyStudent,
     paymentSuccessData,
@@ -523,6 +546,7 @@ function LibraryView() {
         }
         setStudents(parsed.students || []);
         setInquiries(parsed.inquiries || []);
+        setExpenses(parsed.expenses || []);
         setLoading(false);
       } catch (e) {
         console.error("Cache read failed", e);
@@ -535,7 +559,7 @@ function LibraryView() {
     }
 
     const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Network timeout")), 3500)
+      setTimeout(() => reject(new Error("Network timeout")), 4000)
     );
 
     try {
@@ -616,12 +640,23 @@ function LibraryView() {
       const finalInquiries = (inqData as Inquiry[]) || [];
       setInquiries(finalInquiries);
 
+      // Load Expenses
+      const { data: expData } = await supabase
+        .from("library_expenses")
+        .select("*")
+        .eq("library_id", selected.id)
+        .order("expense_date", { ascending: false });
+
+      const finalExpenses = (expData as ExpenseRecord[]) || [];
+      setExpenses(finalExpenses);
+
       localStorage.setItem(
         cacheKey,
         JSON.stringify({
           currentLib: selected,
           students: formattedStudents,
           inquiries: finalInquiries,
+          expenses: finalExpenses,
         })
       );
     } catch (err) {
@@ -731,6 +766,8 @@ function LibraryView() {
   }, 0);
 
   const monthRevenue = paid.reduce((sum, s) => sum + s.monthlyFee, 0);
+  const totalExpensesAmount = expenses.reduce((sum, e) => sum + Number(e.amount), 0);
+  const netProfit = monthRevenue - totalExpensesAmount;
 
   const filters: { id: Filter; label: string }[] = [
     { id: "all", label: `Active (${activeStudents.length})` },
@@ -937,6 +974,42 @@ function LibraryView() {
     setShowBroadcastModal(false);
   }
 
+  // 🟢 EXPENSE MANAGEMENT HANDLERS
+  async function handleAddExpense(e: React.FormEvent) {
+    e.preventDefault();
+    if (!checkOnlineStatus()) return;
+    if (!currentLib?.id) return;
+
+    const payload = {
+      library_id: currentLib.id,
+      title: expenseForm.title.trim(),
+      amount: Number(expenseForm.amount),
+      category: expenseForm.category,
+      expense_date: expenseForm.expense_date,
+    };
+
+    const { data, error } = await supabase.from("library_expenses").insert([payload]).select();
+    if (!error && data) {
+      setExpenses((prev) => [data[0] as ExpenseRecord, ...prev]);
+      setShowExpenseModal(false);
+      setExpenseForm({ title: "", amount: "", category: "Rent", expense_date: getLocalDateString() });
+      showToast("Kharcha / Expense successfully add ho gaya!");
+    } else {
+      alert("Error saving expense: " + (error?.message || "Unknown error"));
+    }
+  }
+
+  async function handleDeleteExpense(id: string) {
+    if (!checkOnlineStatus()) return;
+    if (!confirm("Kya aap is expense ko delete karna chahte hain?")) return;
+
+    const { error } = await supabase.from("library_expenses").delete().eq("id", id);
+    if (!error) {
+      setExpenses((prev) => prev.filter((e) => e.id !== id));
+      showToast("Expense deleted.");
+    }
+  }
+
   function handleExportCSV() {
     if (students.length === 0) {
       alert("Export karne ke liye koi data nahi hai!");
@@ -1061,7 +1134,7 @@ function LibraryView() {
     );
   }
 
-  // 🟢 CYCLE-BASED BULK MARK PAID (First-time joining date + Renewal handling)
+  // 🟢 BULK ACTION 1: CYCLE-BASED BULK MARK PAID
   async function handleBulkMarkPaid() {
     if (selectedStudentIds.length === 0) return;
     if (!checkOnlineStatus()) return;
@@ -1154,6 +1227,76 @@ function LibraryView() {
     }
   }
 
+  // 🟢 BULK ACTION 2: BULK WHATSAPP REMINDERS
+  function handleBulkWhatsAppReminders() {
+    const selected = students.filter((s) => selectedStudentIds.includes(s.id));
+    const dueStudents = selected.filter((s) => s.status !== "Paid" && s.status !== "Left");
+
+    if (dueStudents.length === 0) {
+      alert("Selected students me kisi ki fees pending nahi hai!");
+      return;
+    }
+
+    if (
+      !confirm(
+        `Selected ${dueStudents.length} pending students ke liye WhatsApp chats open karein?`
+      )
+    )
+      return;
+
+    dueStudents.forEach((student, index) => {
+      setTimeout(() => {
+        openWhatsApp(student);
+      }, index * 400);
+    });
+
+    showToast(`${dueStudents.length} WhatsApp reminders open ho gaye!`);
+    setSelectedStudentIds([]);
+  }
+
+  // 🟢 BULK ACTION 3: SEAT SWAPPING (2 STUDENTS)
+  async function handleSwapSeats() {
+    if (selectedStudentIds.length !== 2) {
+      alert("Seat swap karne ke liye theek 2 students select karein!");
+      return;
+    }
+
+    const s1 = students.find((s) => s.id === selectedStudentIds[0]);
+    const s2 = students.find((s) => s.id === selectedStudentIds[1]);
+    if (!s1 || !s2) return;
+
+    if (
+      !confirm(
+        `Kya aap ${s1.name} (Seat: ${s1.seatNo}) aur ${s2.name} (Seat: ${s2.seatNo}) ki seats aapas me badalna chahte hain?`
+      )
+    )
+      return;
+
+    setBulkProcessing(true);
+    try {
+      const seatA = s1.seatNo;
+      const seatB = s2.seatNo;
+
+      await supabase.from("students").update({ seat_no: seatB }).eq("id", s1.id);
+      await supabase.from("students").update({ seat_no: seatA }).eq("id", s2.id);
+
+      setStudents((prev) =>
+        prev.map((s) => {
+          if (s.id === s1.id) return { ...s, seatNo: seatB };
+          if (s.id === s2.id) return { ...s, seatNo: seatA };
+          return s;
+        })
+      );
+
+      setSelectedStudentIds([]);
+      showToast(`✓ Seats swap ho gayi: ${s1.name} (#${seatB}) ⇄ ${s2.name} (#${seatA})!`);
+    } catch (err: any) {
+      alert("Swap me error: " + (err.message || "Unknown error"));
+    } finally {
+      setBulkProcessing(false);
+    }
+  }
+
   // 🟢 SINGLE COLLECT MODAL INITIALIZER
   function handleOpenCollect(student: Student) {
     const defaultMonths = Math.max(1, student.pendingMonths);
@@ -1165,7 +1308,6 @@ function LibraryView() {
     setIsFullSettlement(false);
     setPaymentMode("Cash");
 
-    // First time pay karne par automatic joining date fill karein
     const isFirstTime = !student.lastPaidDate;
     setCollectCustomDate(isFirstTime && student.joiningDate ? student.joiningDate : getLocalDateString());
   }
@@ -1188,6 +1330,58 @@ function LibraryView() {
     setLoadingHistory(false);
   }
 
+  // 🟢 DELETE PAYMENT ENTRY & RECALCULATE STUDENT STATUS AUTOMATICALLY
+  async function handleDeletePaymentRecord(recordId: string) {
+    if (!checkOnlineStatus()) return;
+    if (!historyStudent) return;
+    if (!confirm("Kya aap sach me is payment entry ko delete karna chahte hain? Isse student ka status recalculate ho jayega.")) return;
+
+    try {
+      const { error } = await supabase.from("fee_payments").delete().eq("id", recordId);
+      if (error) throw error;
+
+      const remainingHistory = paymentHistory.filter((p) => p.id !== recordId);
+      setPaymentHistory(remainingHistory);
+
+      const sorted = [...remainingHistory].sort(
+        (a, b) => new Date(b.payment_date).getTime() - new Date(a.payment_date).getTime()
+      );
+      const latestValidDate = sorted.length > 0 ? sorted[0].paid_until_date : null;
+
+      const { dueDateText, status, pendingMonths } = calculateMonthlyDue(
+        historyStudent.joiningDate,
+        latestValidDate
+      );
+
+      await supabase
+        .from("students")
+        .update({
+          last_paid_date: latestValidDate,
+          status: status === "Paid" ? "paid" : "due",
+        })
+        .eq("id", historyStudent.id);
+
+      setStudents((prev) =>
+        prev.map((s) =>
+          s.id === historyStudent.id
+            ? {
+                ...s,
+                lastPaidDate: latestValidDate,
+                dueDate: dueDateText,
+                status: status,
+                pendingMonths: pendingMonths,
+              }
+            : s
+        )
+      );
+
+      setHistoryStudent((prev) => (prev ? { ...prev, lastPaidDate: latestValidDate, status, dueDate: dueDateText } : null));
+      showToast("Payment delete ho gayi aur student ka due status update ho gaya!");
+    } catch (err: any) {
+      alert("Delete failed: " + (err.message || "Unknown error"));
+    }
+  }
+
   async function submitCollectFee(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -1197,7 +1391,6 @@ function LibraryView() {
     const currentTotalReq = collectStudent.monthlyFee * collectMonths;
     const totalCollected = Number(customAmount) > 0 ? Number(customAmount) : currentTotalReq;
 
-    // Concession / Full Settlement check: agar ticked hai toh balance 0 maane
     const currentOldBalance = collectStudent.balanceDue || 0;
     const newBalanceDue = isFullSettlement
       ? 0
@@ -1352,6 +1545,7 @@ function LibraryView() {
     showToast(`Total ${parsed.length} seats Supabase me save ho gayi!`);
   }
 
+  // 🟢 SAVE STUDENT WITH SHIFT-COLLISION CHECK & EDIT PRESERVATION
   async function handleSaveStudent(event: React.FormEvent) {
     event.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -1382,32 +1576,31 @@ function LibraryView() {
         );
 
         if (isBooked) {
-          setFormError(`Seat ${seatNo} pehle se ${form.shift} shift me booked hai!`);
+          setFormError(`Seat ${seatNo} pehle se is slot/shift me booked hai (Shift Collision)!`);
           setSavingStudent(false);
           return;
         }
       }
 
-      const { dueDateText, status, pendingMonths } = calculateMonthlyDue(form.joiningDate, null);
-
-      const payload: any = {
-        name: form.name.trim(),
-        phone: cleanPhone,
-        seat_no: seatNo,
-        shift: form.shift,
-        monthly_fee: fee,
-        joining_date: form.joiningDate,
-        due_date: dueDateText,
-        last_paid_date: null,
-        status: "due",
-        balance_due: 0,
-        library_id: currentLib?.id,
-      };
-
       if (rejoiningStudent) {
+        const { dueDateText, pendingMonths } = calculateMonthlyDue(form.joiningDate, null);
+        const rePayload: any = {
+          name: form.name.trim(),
+          phone: cleanPhone,
+          seat_no: seatNo,
+          shift: form.shift,
+          monthly_fee: fee,
+          joining_date: form.joiningDate,
+          due_date: dueDateText,
+          last_paid_date: null,
+          status: "due",
+          balance_due: 0,
+          library_id: currentLib?.id,
+        };
+
         const { error } = await supabase
           .from("students")
-          .update(payload)
+          .update(rePayload)
           .eq("id", rejoiningStudent.id);
 
         if (error) throw error;
@@ -1417,7 +1610,7 @@ function LibraryView() {
             s.id === rejoiningStudent.id
               ? {
                   ...s,
-                  ...payload,
+                  ...rePayload,
                   seatNo,
                   lastPaidDate: null,
                   status: "Due Today",
@@ -1428,16 +1621,32 @@ function LibraryView() {
           )
         );
 
-        showToast(`Welcome back! ${payload.name} ka re-admission ho gaya.`);
+        showToast(`Welcome back! ${rePayload.name} ka re-admission ho gaya.`);
         setShowModal(false);
         setRejoiningStudent(null);
         return;
       }
 
       if (editingId) {
+        const curr = students.find((s) => s.id === editingId);
+        const joining = form.joiningDate || curr?.joiningDate || todayStr;
+        const lastPaid = curr?.lastPaidDate || null;
+        const { dueDateText, status, pendingMonths } = calculateMonthlyDue(joining, lastPaid, curr?.status);
+
+        const editPayload: any = {
+          name: form.name.trim(),
+          phone: cleanPhone,
+          seat_no: seatNo,
+          shift: form.shift,
+          monthly_fee: fee,
+          joining_date: joining,
+          due_date: dueDateText,
+          status: (curr?.balanceDue || 0) > 0 ? "due" : status === "Paid" ? "paid" : "due",
+        };
+
         const { error } = await supabase
           .from("students")
-          .update(payload)
+          .update(editPayload)
           .eq("id", editingId);
 
         if (error) throw error;
@@ -1448,19 +1657,20 @@ function LibraryView() {
               ? {
                   ...s,
                   seatNo,
-                  name: payload.name,
-                  phone: payload.phone,
+                  name: editPayload.name,
+                  phone: editPayload.phone,
                   shift: form.shift,
                   monthlyFee: fee,
-                  joiningDate: form.joiningDate,
+                  joiningDate: joining,
                   dueDate: dueDateText,
-                  status: status,
-                  pendingMonths: pendingMonths,
+                  status: (curr?.balanceDue || 0) > 0 ? ("Due Today" as Status) : status,
+                  pendingMonths: (curr?.balanceDue || 0) > 0 ? 1 : pendingMonths,
                 }
               : s
           )
         );
-        showToast(`${payload.name} ka data update ho gaya!`);
+
+        showToast(`Seat change ho gayi! Payment record safe hai.`);
         setShowModal(false);
         return;
       }
@@ -1478,7 +1688,22 @@ function LibraryView() {
         return;
       }
 
-      const { data, error } = await supabase.from("students").insert([payload]).select();
+      const { dueDateText, status, pendingMonths } = calculateMonthlyDue(form.joiningDate, null);
+      const newPayload: any = {
+        name: form.name.trim(),
+        phone: cleanPhone,
+        seat_no: seatNo,
+        shift: form.shift,
+        monthly_fee: fee,
+        joining_date: form.joiningDate,
+        due_date: dueDateText,
+        last_paid_date: null,
+        status: "due",
+        balance_due: 0,
+        library_id: currentLib?.id,
+      };
+
+      const { data, error } = await supabase.from("students").insert([newPayload]).select();
       if (error) throw error;
 
       if (data && data.length > 0) {
@@ -1503,8 +1728,8 @@ function LibraryView() {
         ]);
         showToast(
           seatNo === "FLOATING"
-            ? `${payload.name} ko Advance/Floating slot me add kar diya.`
-            : `${payload.name} ko seat ${seatNo} par jod diya.`
+            ? `${newPayload.name} ko Advance/Floating slot me add kar diya.`
+            : `${newPayload.name} ko seat ${seatNo} par jod diya.`
         );
       }
 
@@ -1616,7 +1841,7 @@ function LibraryView() {
             <button
               type="button"
               onClick={() => setActiveTab("students")}
-              className={`px-4 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
                 activeTab === "students"
                   ? "bg-white text-indigo-600 shadow-sm"
                   : "text-slate-600 hover:text-slate-900"
@@ -1630,7 +1855,7 @@ function LibraryView() {
             <button
               type="button"
               onClick={() => setActiveTab("seats")}
-              className={`px-4 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
                 activeTab === "seats"
                   ? "bg-white text-indigo-600 shadow-sm"
                   : "text-slate-600 hover:text-slate-900"
@@ -1641,7 +1866,7 @@ function LibraryView() {
             <button
               type="button"
               onClick={() => setActiveTab("inquiries")}
-              className={`px-4 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
                 activeTab === "inquiries"
                   ? "bg-white text-purple-600 shadow-sm"
                   : "text-slate-600 hover:text-slate-900"
@@ -1651,6 +1876,17 @@ function LibraryView() {
               <span className="text-[11px] bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full font-extrabold">
                 {inquiries.length}
               </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("expenses")}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                activeTab === "expenses"
+                  ? "bg-white text-rose-600 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <span>💰 Kharcha / Expenses</span>
             </button>
           </div>
 
@@ -1684,7 +1920,7 @@ function LibraryView() {
       </header>
 
       <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        <section className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-4 mb-6">
+        <section className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-5 mb-6">
           <article className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(79,70,229,0.08)]">
             <div className="flex justify-between items-start">
               <p className="text-xs font-bold text-indigo-950 uppercase tracking-wide">Total Enrolled</p>
@@ -1728,12 +1964,26 @@ function LibraryView() {
 
           <article className="rounded-2xl border border-purple-100 bg-gradient-to-br from-purple-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(168,85,247,0.08)]">
             <div className="flex justify-between items-start">
-              <p className="text-xs font-bold text-purple-950 uppercase tracking-wide">Revenue This Month</p>
+              <p className="text-xs font-bold text-purple-950 uppercase tracking-wide">Gross Fee Collected</p>
               <span className="p-2 rounded-xl bg-purple-600 text-white text-xs shadow-sm">₹</span>
             </div>
             <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-purple-950">{formatINR(monthRevenue)}</p>
             <p className="mt-1.5 text-xs text-purple-700 font-bold bg-purple-50 px-2 py-0.5 rounded-full w-max border border-purple-200">
               {paid.length} Paid Students
+            </p>
+          </article>
+
+          {/* 🟢 NET PROFIT CARD */}
+          <article className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(16,185,129,0.1)]">
+            <div className="flex justify-between items-start">
+              <p className="text-xs font-bold text-emerald-950 uppercase tracking-wide">Net Profit</p>
+              <span className="p-2 rounded-xl bg-emerald-600 text-white text-xs shadow-sm">📈</span>
+            </div>
+            <p className={`mt-2 text-2xl sm:text-3xl font-black tracking-tight ${netProfit >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
+              {formatINR(netProfit)}
+            </p>
+            <p className="mt-1.5 text-xs text-slate-500 font-medium">
+              Kharcha: <strong className="text-rose-600">{formatINR(totalExpensesAmount)}</strong>
             </p>
           </article>
         </section>
@@ -2196,11 +2446,80 @@ function LibraryView() {
             </div>
           </section>
         )}
+
+        {/* 🟢 TAB 4: EXPENSES / KHARCHA VIEW */}
+        {activeTab === "expenses" && (
+          <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
+            <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-3 sm:items-center justify-between bg-slate-50/70">
+              <div>
+                <h3 className="font-extrabold text-slate-900">Monthly Expenses & Bills</h3>
+                <p className="text-xs text-slate-500">Rent, Bijli, Wi-Fi, Water aur repairs ka kharcha track karein.</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowExpenseModal(true)}
+                  className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-xs flex items-center gap-1.5 transition active:scale-95"
+                >
+                  <span>+ Naya Kharcha Add Karein</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-100">
+                  <tr>
+                    <th className="px-5 py-3 font-bold">Kharcha Detail</th>
+                    <th className="px-5 py-3 font-bold">Category</th>
+                    <th className="px-5 py-3 font-bold">Date</th>
+                    <th className="px-5 py-3 font-bold">Amount (₹)</th>
+                    <th className="px-5 py-3 font-bold text-center">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-medium">
+                  {expenses.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="px-5 py-12 text-center text-slate-400">
+                        Is mahine koi kharcha add nahi hua hai.
+                      </td>
+                    </tr>
+                  ) : (
+                    expenses.map((exp) => (
+                      <tr key={exp.id} className="hover:bg-slate-50/70 transition">
+                        <td className="px-5 py-3.5 font-bold text-slate-900">{exp.title}</td>
+                        <td className="px-5 py-3.5">
+                          <span className="bg-slate-100 text-slate-700 border border-slate-200 px-2 py-0.5 rounded-md font-semibold text-[11px]">
+                            {exp.category}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3.5 text-slate-500">{formatDate(exp.expense_date)}</td>
+                        <td className="px-5 py-3.5 font-black text-rose-700 text-sm">
+                          {formatINR(exp.amount)}
+                        </td>
+                        <td className="px-5 py-3.5 text-center">
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteExpense(exp.id)}
+                            className="text-rose-500 hover:text-rose-700 font-bold px-2 py-1"
+                            title="Delete Expense"
+                          >
+                            🗑️ Delete
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </section>
+        )}
       </main>
 
       {/* 🟢 FLOATING BULK ACTIONS TOOLBAR */}
       {selectedStudentIds.length > 0 && (
-        <aside aria-label="Bulk actions toolbar" className="fixed bottom-16 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center gap-4 border border-slate-700 backdrop-blur-md animate-in fade-in slide-in-from-bottom-3">
+        <aside aria-label="Bulk actions toolbar" className="fixed bottom-16 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl flex flex-wrap items-center gap-3 border border-slate-700 backdrop-blur-md animate-in fade-in slide-in-from-bottom-3 max-w-[90vw]">
           <div className="flex items-center gap-2">
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-[11px] font-black">
               {selectedStudentIds.length}
@@ -2208,21 +2527,40 @@ function LibraryView() {
             <span className="text-xs font-bold text-slate-300">Selected</span>
           </div>
 
-          <div className="h-4 w-px bg-slate-700" />
+          <div className="h-4 w-px bg-slate-700 hidden sm:block" />
 
           <button
             type="button"
             disabled={bulkProcessing}
             onClick={handleBulkMarkPaid}
-            className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-xs font-bold px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm disabled:opacity-50"
+            className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1 shadow-sm disabled:opacity-50"
           >
-            <span>{bulkProcessing ? "Processing..." : "⚡ Mark Paid (Cycle Date)"}</span>
+            <span>{bulkProcessing ? "..." : "⚡ Mark Paid"}</span>
           </button>
 
           <button
             type="button"
+            onClick={handleBulkWhatsAppReminders}
+            className="bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1 shadow-sm"
+          >
+            <span>💬 Bulk WA</span>
+          </button>
+
+          {selectedStudentIds.length === 2 && (
+            <button
+              type="button"
+              disabled={bulkProcessing}
+              onClick={handleSwapSeats}
+              className="bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1 shadow-sm disabled:opacity-50"
+            >
+              <span>⇄ Swap Seats</span>
+            </button>
+          )}
+
+          <button
+            type="button"
             onClick={() => setSelectedStudentIds([])}
-            className="text-xs text-slate-400 hover:text-white font-semibold transition"
+            className="text-xs text-slate-400 hover:text-white font-semibold transition ml-auto"
           >
             Clear
           </button>
@@ -2230,7 +2568,7 @@ function LibraryView() {
       )}
 
       {/* MOBILE BOTTOM NAVIGATION */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-6 py-2.5 flex justify-between items-center shadow-lg">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-4 py-2.5 flex justify-between items-center shadow-lg">
         <button
           onClick={() => setActiveTab("students")}
           className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
@@ -2262,6 +2600,16 @@ function LibraryView() {
         </button>
 
         <button
+          onClick={() => setActiveTab("expenses")}
+          className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
+            activeTab === "expenses" ? "text-rose-600" : "text-slate-400"
+          }`}
+        >
+          <span className="text-base">💰</span>
+          <span>Kharcha</span>
+        </button>
+
+        <button
           onClick={() => setShowVacantModal(true)}
           className="flex flex-col items-center gap-0.5 text-[10px] font-bold text-slate-400"
         >
@@ -2269,6 +2617,91 @@ function LibraryView() {
           <span>Config</span>
         </button>
       </nav>
+
+      {/* MODAL: ADD EXPENSE */}
+      {showExpenseModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
+          <form onSubmit={handleAddExpense} className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl space-y-3">
+            <div className="flex justify-between items-center">
+              <h3 className="text-base font-bold text-slate-900">Add Library Expense / Kharcha</h3>
+              <button
+                type="button"
+                onClick={() => setShowExpenseModal(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block">Expense Name / Title:</label>
+              <input
+                required
+                placeholder="e.g. Electricity Bill, Room Rent, Wi-Fi"
+                value={expenseForm.title}
+                onChange={(e) => setExpenseForm({ ...expenseForm, title: e.target.value })}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block">Category:</label>
+              <select
+                value={expenseForm.category}
+                onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}
+                className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold"
+              >
+                <option value="Rent">Rent</option>
+                <option value="Electricity">Electricity / Bijli</option>
+                <option value="Internet">Internet / Wi-Fi</option>
+                <option value="Water">Water Bottles</option>
+                <option value="Maintenance">Maintenance & Repairs</option>
+                <option value="Other">Other Expenses</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Amount (₹):</label>
+                <input
+                  required
+                  type="number"
+                  placeholder="Amount"
+                  value={expenseForm.amount}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-slate-500 mb-1 block">Date:</label>
+                <input
+                  required
+                  type="date"
+                  value={expenseForm.expense_date}
+                  onChange={(e) => setExpenseForm({ ...expenseForm, expense_date: e.target.value })}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold"
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowExpenseModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold px-4 py-2 rounded-xl"
+              >
+                Save Expense
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* MODAL: ADD / EDIT INQUIRY */}
       {showInquiryModal && (
@@ -2515,7 +2948,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: COLLECT FEE (WITH DISCOUNT / CONCESSION TOGGLE) */}
+      {/* MODAL: COLLECT FEE */}
       {collectStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={submitCollectFee} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
@@ -2582,7 +3015,6 @@ function LibraryView() {
                 </span>
               </div>
 
-              {/* 🟢 DISCOUNT / CONCESSION TOGGLE */}
               <div className="flex items-center gap-2 p-2 bg-slate-50 rounded-xl border border-slate-200">
                 <input
                   type="checkbox"
@@ -2743,7 +3175,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: PAYMENT HISTORY */}
+      {/* MODAL: PAYMENT HISTORY WITH DELETE BUTTON */}
       {historyStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
@@ -2786,27 +3218,37 @@ function LibraryView() {
                         )}
                       </div>
 
-                      <button
-                        type="button"
-                        title="Download this Receipt again"
-                        onClick={() => {
-                          if (!historyStudent) return;
-                          downloadReceiptPDF(
-                            currentLib?.name || "LIBRARY MANAGEMENT",
-                            currentLib?.owner_name || "Manager",
-                            currentLib?.phone || "9301530783",
-                            historyStudent,
-                            item.amount_paid,
-                            item.months_count,
-                            item.payment_mode,
-                            item.payment_date,
-                            item.paid_until_date || undefined
-                          );
-                        }}
-                        className="rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-3 py-1.5 text-xs font-bold transition flex items-center gap-1 shadow-xs whitespace-nowrap active:scale-95"
-                      >
-                        <span>📥 PDF</span>
-                      </button>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          title="Download this Receipt again"
+                          onClick={() => {
+                            if (!historyStudent) return;
+                            downloadReceiptPDF(
+                              currentLib?.name || "LIBRARY MANAGEMENT",
+                              currentLib?.owner_name || "Manager",
+                              currentLib?.phone || "9301530783",
+                              historyStudent,
+                              item.amount_paid,
+                              item.months_count,
+                              item.payment_mode,
+                              item.payment_date,
+                              item.paid_until_date || undefined
+                            );
+                          }}
+                          className="rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 px-2.5 py-1.5 text-xs font-bold transition flex items-center gap-1 shadow-xs whitespace-nowrap active:scale-95"
+                        >
+                          <span>📥 PDF</span>
+                        </button>
+                        <button
+                          type="button"
+                          title="Delete this payment entry"
+                          onClick={() => handleDeletePaymentRecord(item.id)}
+                          className="rounded-lg border border-rose-200 bg-rose-50 hover:bg-rose-100 text-rose-600 px-2.5 py-1.5 text-xs font-bold transition active:scale-95"
+                        >
+                          🗑️
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
