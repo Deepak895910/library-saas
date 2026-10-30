@@ -7,7 +7,7 @@ import jsPDF from "jspdf";
 
 type Shift = "Morning" | "Evening" | "Full Day" | "Random";
 type Status = "Paid" | "Due Today" | "Overdue" | "Left";
-type Filter = "all" | "due" | "overdue" | "paid" | "left";
+type Filter = "all" | "due" | "overdue" | "paid" | "left" | "custom";
 type PaymentMode = "Cash" | "UPI/Online";
 
 type Student = {
@@ -260,6 +260,7 @@ function downloadReceiptPDF(
   doc.save(`${student.name.replace(/\s+/g, "_")}_Fee_Receipt.pdf`);
 }
 
+// 🟢 DUE TODAY & OVERDUE STRICT LOGIC
 function calculateMonthlyDue(
   joiningDateStr: string,
   lastPaidDateStr: string | null,
@@ -290,11 +291,14 @@ function calculateMonthlyDue(
     const diffTime = today.getTime() - firstDueDate.getTime();
     const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
-    if (diffDays > 30) {
-      const monthDiff = Math.max(2, Math.floor(diffDays / 30) + 1);
+    if (diffDays === 0) {
+      return { dueDateText, status: "Due Today", pendingMonths: 1 };
+    } else if (diffDays > 0) {
+      const monthDiff = diffDays > 30 ? Math.max(2, Math.floor(diffDays / 30) + 1) : 1;
       return { dueDateText, status: "Overdue", pendingMonths: monthDiff };
+    } else {
+      return { dueDateText, status: "Paid", pendingMonths: 0 };
     }
-    return { dueDateText, status: "Due Today", pendingMonths: 1 };
   }
 
   const pParts = lastPaidDateStr.split("-").map(Number);
@@ -310,11 +314,11 @@ function calculateMonthlyDue(
   const diffTime = today.getTime() - targetDue.getTime();
   const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
 
-  if (diffDays > 30) {
-    const monthDiff = Math.max(2, Math.floor(diffDays / 30) + 1);
+  if (diffDays === 0) {
+    return { dueDateText, status: "Due Today", pendingMonths: 1 };
+  } else if (diffDays > 0) {
+    const monthDiff = diffDays > 30 ? Math.max(2, Math.floor(diffDays / 30) + 1) : 1;
     return { dueDateText, status: "Overdue", pendingMonths: monthDiff };
-  } else if (diffDays >= 0) {
-    return { dueDateText, status: diffDays === 0 ? "Due Today" : "Overdue", pendingMonths: 1 };
   } else {
     return { dueDateText, status: "Paid", pendingMonths: 0 };
   }
@@ -342,6 +346,15 @@ function LibraryView() {
   const [formError, setFormError] = useState("");
   const [uploadingLogo, setUploadingLogo] = useState(false);
 
+  // Custom Filter State
+  const [showCustomFilter, setShowCustomFilter] = useState(false);
+  const [customFilterShift, setCustomFilterShift] = useState<string>("All");
+  const [customDateFrom, setCustomDateFrom] = useState<string>("");
+  const [customDateTo, setCustomDateTo] = useState<string>("");
+
+  // Student Detail View Modal
+  const [viewStudent, setViewStudent] = useState<Student | null>(null);
+
   const [savingStudent, setSavingStudent] = useState(false);
   const [rejoiningStudent, setRejoiningStudent] = useState<Student | null>(null);
 
@@ -351,11 +364,9 @@ function LibraryView() {
   const [seatShiftView, setSeatShiftView] = useState<Shift | "All">("Morning");
   const [vacantShiftFilter, setVacantShiftFilter] = useState<Shift | "All">("All");
 
-  // Multi-Selection State for Bulk Actions
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [bulkProcessing, setBulkProcessing] = useState(false);
 
-  // Single Collect Modal State
   const [collectStudent, setCollectStudent] = useState<Student | null>(null);
   const [collectMonths, setCollectMonths] = useState<number>(1);
   const [customAmount, setCustomAmount] = useState<string>("");
@@ -367,7 +378,6 @@ function LibraryView() {
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
-  // Expense Modal State
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [expenseForm, setExpenseForm] = useState({
     title: "",
@@ -487,6 +497,7 @@ function LibraryView() {
         showInquiryModal ||
         showBroadcastModal ||
         showExpenseModal ||
+        viewStudent ||
         collectStudent ||
         historyStudent ||
         paymentSuccessData
@@ -496,6 +507,7 @@ function LibraryView() {
         setShowInquiryModal(false);
         setShowBroadcastModal(false);
         setShowExpenseModal(false);
+        setViewStudent(null);
         setEditingInquiryId(null);
         setCollectStudent(null);
         setHistoryStudent(null);
@@ -523,6 +535,7 @@ function LibraryView() {
     showInquiryModal,
     showBroadcastModal,
     showExpenseModal,
+    viewStudent,
     collectStudent,
     historyStudent,
     paymentSuccessData,
@@ -640,7 +653,6 @@ function LibraryView() {
       const finalInquiries = (inqData as Inquiry[]) || [];
       setInquiries(finalInquiries);
 
-      // Load Expenses
       const { data: expData } = await supabase
         .from("library_expenses")
         .select("*")
@@ -778,7 +790,7 @@ function LibraryView() {
   ];
 
   const filtered = useMemo(() => {
-    const byStatus =
+    let baseList =
       filter === "due"
         ? dueToday
         : filter === "overdue"
@@ -789,10 +801,20 @@ function LibraryView() {
               ? leftStudents
               : activeStudents;
 
+    if (customFilterShift !== "All") {
+      baseList = baseList.filter((s) => s.shift === customFilterShift);
+    }
+    if (customDateFrom) {
+      baseList = baseList.filter((s) => s.joiningDate >= customDateFrom);
+    }
+    if (customDateTo) {
+      baseList = baseList.filter((s) => s.joiningDate <= customDateTo);
+    }
+
     const q = query.trim().toLowerCase();
     const matched = !q
-      ? byStatus
-      : byStatus.filter(
+      ? baseList
+      : baseList.filter(
           (s) =>
             s.name.toLowerCase().includes(q) ||
             s.seatNo.toLowerCase().includes(q) ||
@@ -802,7 +824,18 @@ function LibraryView() {
     return [...matched].sort((a, b) =>
       a.seatNo.localeCompare(b.seatNo, undefined, SEAT_COLLATOR)
     );
-  }, [activeStudents, dueToday, filter, leftStudents, overdue, paid, query]);
+  }, [
+    activeStudents,
+    dueToday,
+    filter,
+    leftStudents,
+    overdue,
+    paid,
+    customFilterShift,
+    customDateFrom,
+    customDateTo,
+    query,
+  ]);
 
   function showToast(message: string) {
     setToast(message);
@@ -974,7 +1007,6 @@ function LibraryView() {
     setShowBroadcastModal(false);
   }
 
-  // 🟢 EXPENSE MANAGEMENT HANDLERS
   async function handleAddExpense(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -1010,47 +1042,65 @@ function LibraryView() {
     }
   }
 
+  // 🟢 NAYA FIX: Export CSV with Joining Date, Valid Until & Filter Alignment
   function handleExportCSV() {
-    if (students.length === 0) {
+    const dataToExport = filtered;
+
+    if (dataToExport.length === 0) {
       alert("Export karne ke liye koi data nahi hai!");
       return;
     }
 
     const headers = [
       "Seat No",
-      "Name",
-      "Phone",
+      "Student Name",
+      "Phone Number",
       "Shift",
       "Monthly Fee",
       "Joining Date",
-      "Valid Until Date",
-      "Payment Mode",
-      "Balance Due",
+      "Valid Until (Next Due)",
+      "Pending Balance Due",
       "Status",
     ];
-    const rows = students.map((s) => [
-      `"${s.seatNo}"`,
-      `"${s.name}"`,
-      `"${s.phone}"`,
-      `"${s.shift}"`,
-      s.monthlyFee,
-      `"${s.joiningDate}"`,
-      `"${s.lastPaidDate || "N/A"}"`,
-      `"${s.lastPaymentMode || "Cash"}"`,
-      s.balanceDue || 0,
-      `"${s.status}"`,
-    ]);
+
+    const rows = dataToExport.map((s) => {
+      const pendingAmount =
+        (s.balanceDue || 0) > 0
+          ? s.balanceDue!
+          : s.status === "Paid"
+            ? 0
+            : s.monthlyFee * Math.max(1, s.pendingMonths);
+
+      const validUntilValue = s.lastPaidDate ? s.lastPaidDate : "Never Paid";
+
+      return [
+        `"${s.seatNo}"`,
+        `"${s.name}"`,
+        `"${s.phone}"`,
+        `"${s.shift}"`,
+        s.monthlyFee,
+        `"${s.joiningDate || "N/A"}"`,
+        `"${validUntilValue}"`,
+        pendingAmount,
+        `"${(s.balanceDue || 0) > 0 ? "Partial Due" : s.status}"`,
+      ];
+    });
 
     const csvContent =
-      "data:text/csv;charset=utf-8," + [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
+      "data:text/csv;charset=utf-8,\uFEFF" +
+      [headers.join(","), ...rows.map((e) => e.join(","))].join("\n");
+
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `${currentLib?.name || "Library"}_Students_${todayStr}.csv`);
+    link.setAttribute(
+      "download",
+      `${currentLib?.name || "Library"}_${filter.toUpperCase()}_Students_${todayStr}.csv`
+    );
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
-    showToast("Excel/CSV export downloaded!");
+    showToast(`✓ ${dataToExport.length} ${filter} records export ho gaye!`);
   }
 
   function handleOpenAdd(suggestedSeat = "") {
@@ -1119,7 +1169,6 @@ function LibraryView() {
     }
   }
 
-  // 🟢 SELECTION TOGGLES
   function toggleSelectAll() {
     if (selectedStudentIds.length === filtered.length) {
       setSelectedStudentIds([]);
@@ -1134,7 +1183,6 @@ function LibraryView() {
     );
   }
 
-  // 🟢 BULK ACTION 1: CYCLE-BASED BULK MARK PAID
   async function handleBulkMarkPaid() {
     if (selectedStudentIds.length === 0) return;
     if (!checkOnlineStatus()) return;
@@ -1227,7 +1275,6 @@ function LibraryView() {
     }
   }
 
-  // 🟢 BULK ACTION 2: BULK WHATSAPP REMINDERS
   function handleBulkWhatsAppReminders() {
     const selected = students.filter((s) => selectedStudentIds.includes(s.id));
     const dueStudents = selected.filter((s) => s.status !== "Paid" && s.status !== "Left");
@@ -1254,7 +1301,6 @@ function LibraryView() {
     setSelectedStudentIds([]);
   }
 
-  // 🟢 BULK ACTION 3: SEAT SWAPPING (2 STUDENTS)
   async function handleSwapSeats() {
     if (selectedStudentIds.length !== 2) {
       alert("Seat swap karne ke liye theek 2 students select karein!");
@@ -1297,7 +1343,6 @@ function LibraryView() {
     }
   }
 
-  // 🟢 SINGLE COLLECT MODAL INITIALIZER
   function handleOpenCollect(student: Student) {
     const defaultMonths = Math.max(1, student.pendingMonths);
     setCollectStudent(student);
@@ -1330,7 +1375,6 @@ function LibraryView() {
     setLoadingHistory(false);
   }
 
-  // 🟢 DELETE PAYMENT ENTRY & RECALCULATE STUDENT STATUS AUTOMATICALLY
   async function handleDeletePaymentRecord(recordId: string) {
     if (!checkOnlineStatus()) return;
     if (!historyStudent) return;
@@ -1545,7 +1589,6 @@ function LibraryView() {
     showToast(`Total ${parsed.length} seats Supabase me save ho gayi!`);
   }
 
-  // 🟢 SAVE STUDENT WITH SHIFT-COLLISION CHECK & EDIT PRESERVATION
   async function handleSaveStudent(event: React.FormEvent) {
     event.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -1973,7 +2016,6 @@ function LibraryView() {
             </p>
           </article>
 
-          {/* 🟢 NET PROFIT CARD */}
           <article className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(16,185,129,0.1)]">
             <div className="flex justify-between items-start">
               <p className="text-xs font-bold text-emerald-950 uppercase tracking-wide">Net Profit</p>
@@ -2049,15 +2091,14 @@ function LibraryView() {
                     <div
                       key={seatNum}
                       onClick={() => {
-                        setQuery(occupant.name);
-                        setActiveTab("students");
+                        setViewStudent(occupant);
                       }}
                       className={`cursor-pointer p-2.5 rounded-2xl border text-center transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${
                         isDue
                           ? "bg-amber-50 border-amber-300 text-amber-950"
                           : "bg-rose-50 border-rose-200 text-rose-950"
                       }`}
-                      title={`${occupant.name} (${occupant.phone}) - Due: ${occupant.dueDate}`}
+                      title={`${occupant.name} (${occupant.phone}) - Click to view detail`}
                     >
                       <span className="text-[10px] block font-mono font-black opacity-80">#{seatNum}</span>
                       <p className="text-xs font-extrabold truncate mt-0.5">{occupant.name}</p>
@@ -2088,36 +2129,267 @@ function LibraryView() {
           </div>
         )}
 
-        {/* TAB 2: STUDENTS TABLE WITH CHECKBOX & BULK ACTIONS */}
+        {/* TAB 2: STUDENTS VIEW WITH CUSTOM FILTERS + DETAIL MODAL INTEGRATION */}
         {activeTab === "students" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
-            <div className="flex flex-col gap-4 border-b border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
-              <div className="flex flex-wrap gap-2">
-                {filters.map((item) => (
+            <div className="flex flex-col gap-3 border-b border-slate-100 p-4">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex flex-wrap gap-2">
+                  {filters.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => setFilter(item.id)}
+                      className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition ${
+                        filter === item.id
+                          ? "bg-slate-900 text-white shadow-sm"
+                          : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                      }`}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
                   <button
-                    key={item.id}
                     type="button"
-                    onClick={() => setFilter(item.id)}
-                    className={`rounded-xl px-3.5 py-1.5 text-xs font-bold transition ${
-                      filter === item.id
-                        ? "bg-slate-900 text-white shadow-sm"
-                        : "bg-slate-100 text-slate-600 hover:bg-slate-200"
+                    onClick={() => setShowCustomFilter(!showCustomFilter)}
+                    className={`rounded-xl px-3 py-1.5 text-xs font-bold transition border flex items-center gap-1.5 ${
+                      showCustomFilter || customFilterShift !== "All" || customDateFrom || customDateTo
+                        ? "bg-indigo-50 border-indigo-300 text-indigo-700 shadow-xs"
+                        : "bg-white border-slate-200 text-slate-700 hover:bg-slate-50"
                     }`}
                   >
-                    {item.label}
+                    <span>⚙️ Custom Filter</span>
+                    {(customFilterShift !== "All" || customDateFrom || customDateTo) && (
+                      <span className="w-2 h-2 rounded-full bg-indigo-600"></span>
+                    )}
                   </button>
-                ))}
+                </div>
+
+                <input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="Search name, seat, or phone..."
+                  className="w-full sm:max-w-xs rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20"
+                />
               </div>
-              <input
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-                placeholder="Search name, seat, or phone..."
-                className="w-full sm:max-w-xs rounded-xl border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs outline-none focus:bg-white focus:ring-2 focus:ring-indigo-500/20"
-              />
+
+              {/* CUSTOM FILTER PANEL */}
+              {showCustomFilter && (
+                <div className="p-3 bg-slate-50/80 rounded-xl border border-slate-200 flex flex-wrap items-center gap-3 animate-in fade-in">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1">Shift:</label>
+                    <select
+                      value={customFilterShift}
+                      onChange={(e) => setCustomFilterShift(e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold"
+                    >
+                      <option value="All">All Shifts</option>
+                      <option value="Morning">Morning</option>
+                      <option value="Evening">Evening</option>
+                      <option value="Full Day">Full Day</option>
+                      <option value="Random">Random / Floating</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1">Joining From:</label>
+                    <input
+                      type="date"
+                      value={customDateFrom}
+                      onChange={(e) => setCustomDateFrom(e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-500 block mb-1">Joining To:</label>
+                    <input
+                      type="date"
+                      value={customDateTo}
+                      onChange={(e) => setCustomDateTo(e.target.value)}
+                      className="rounded-lg border border-slate-200 bg-white px-2 py-1 text-xs font-medium"
+                    />
+                  </div>
+
+                  {(customFilterShift !== "All" || customDateFrom || customDateTo) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCustomFilterShift("All");
+                        setCustomDateFrom("");
+                        setCustomDateTo("");
+                      }}
+                      className="text-xs text-rose-600 font-bold self-end py-1 hover:underline ml-auto"
+                    >
+                      Reset Filter
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
 
-            <div className="overflow-x-auto">
-              <table className="min-w-[1260px] w-full text-left text-xs">
+            {/* 📱 1. MOBILE SMART CARD VIEW */}
+            <div className="md:hidden divide-y divide-slate-100 p-2 space-y-2.5">
+              {loading && students.length === 0 ? (
+                <div className="p-8 text-center text-slate-400 text-xs">Loading data...</div>
+              ) : filtered.length === 0 ? (
+                <div className="p-8 text-center text-slate-500 text-xs">Koi student nahi mila.</div>
+              ) : (
+                filtered.map((student) => {
+                  const isSelected = selectedStudentIds.includes(student.id);
+                  const isDue = student.status === "Due Today" || student.status === "Overdue" || (student.balanceDue || 0) > 0;
+                  return (
+                    <div
+                      key={student.id}
+                      className={`p-3.5 rounded-2xl border transition duration-150 ${
+                        isSelected
+                          ? "bg-indigo-50/70 border-indigo-300 ring-2 ring-indigo-500/20"
+                          : isDue
+                            ? "bg-white border-amber-200/90 shadow-xs"
+                            : "bg-white border-slate-200/80 shadow-xs"
+                      }`}
+                    >
+                      {/* Top Header: Checkbox + Seat + Name (Clickable) + Call */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => toggleSelectStudent(student.id)}
+                            className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setViewStudent(student)}
+                            className="text-left flex items-center gap-2 min-w-0"
+                          >
+                            <span
+                              className={`inline-flex min-w-[2.75rem] items-center justify-center rounded-lg px-2 py-0.5 font-mono text-xs font-black ${
+                                student.status === "Left"
+                                  ? "bg-slate-200 text-slate-600"
+                                  : student.shift === "Random" || student.seatNo === "FLOATING"
+                                    ? "bg-rose-100 text-rose-800 border border-rose-200"
+                                    : "bg-slate-900 text-white"
+                              }`}
+                            >
+                              {student.seatNo}
+                            </span>
+                            <span className="font-extrabold text-slate-900 text-sm truncate hover:text-indigo-600 underline-offset-2 hover:underline">
+                              {student.name}
+                            </span>
+                          </button>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <a
+                            href={`tel:${student.phone}`}
+                            title="Call Student"
+                            className="inline-flex items-center justify-center w-7 h-7 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-200 text-xs font-bold"
+                          >
+                            📞
+                          </a>
+                        </div>
+                      </div>
+
+                      {/* Middle Row: Phone + Shift Badge + Due/Status Info */}
+                      <div
+                        onClick={() => setViewStudent(student)}
+                        className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-xs cursor-pointer"
+                      >
+                        <div className="space-y-0.5">
+                          <p className="font-mono text-slate-600 font-semibold text-[11px]">{student.phone}</p>
+                          <span className={`inline-flex rounded-md px-2 py-0.5 text-[9px] font-bold ${shiftBadge(student.shift)}`}>
+                            {student.shift}
+                          </span>
+                        </div>
+
+                        <div className="text-right">
+                          {(student.balanceDue || 0) > 0 ? (
+                            <div>
+                              <span className="font-black text-rose-700 text-xs">{formatINR(student.balanceDue!)}</span>
+                              <span className="block text-[9px] text-amber-700 font-bold">Partial Balance</span>
+                            </div>
+                          ) : student.status === "Paid" ? (
+                            <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 text-[10px]">
+                              Paid (All Clear)
+                            </span>
+                          ) : (
+                            <div>
+                              <span className="font-black text-rose-700 text-xs">
+                                {formatINR(student.monthlyFee * Math.max(1, student.pendingMonths))}
+                              </span>
+                              <span className="block text-[9px] text-rose-600 font-bold">
+                                {student.status} {student.pendingMonths > 1 && `(${student.pendingMonths}M)`}
+                              </span>
+                            </div>
+                          )}
+                          <span className="text-[10px] text-slate-400 block mt-0.5">
+                            Due: {student.dueDate}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Bottom Actions Row */}
+                      <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between gap-1.5">
+                        {student.status !== "Left" && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenCollect(student)}
+                              className="flex-1 bg-indigo-600 text-white font-bold py-1.5 px-2 rounded-xl text-xs shadow-xs hover:bg-indigo-700 active:scale-95 text-center"
+                            >
+                              Collect ₹
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => openWhatsApp(student)}
+                              className="bg-emerald-500 text-white font-bold py-1.5 px-2.5 rounded-xl text-xs shadow-xs hover:bg-emerald-600 active:scale-95"
+                            >
+                              💬 WA
+                            </button>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleOpenHistory(student)}
+                          className="bg-slate-100 text-slate-700 border border-slate-200 font-bold py-1.5 px-2.5 rounded-xl text-xs hover:bg-slate-200 active:scale-95"
+                        >
+                          📜
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEdit(student)}
+                          className="bg-indigo-50 text-indigo-700 border border-indigo-200 font-bold py-1.5 px-2.5 rounded-xl text-xs hover:bg-indigo-100 active:scale-95"
+                        >
+                          ✏️
+                        </button>
+                        {student.status !== "Left" ? (
+                          <button
+                            type="button"
+                            onClick={() => handleMarkLeft(student)}
+                            className="bg-amber-50 text-amber-800 border border-amber-200 font-bold py-1.5 px-2 rounded-xl text-xs hover:bg-amber-100 active:scale-95"
+                          >
+                            Vacate
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleDelete(student.id, student.name)}
+                            className="bg-red-50 text-red-600 border border-red-200 font-bold py-1.5 px-2 rounded-xl text-xs hover:bg-red-100"
+                          >
+                            ✕
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* 💻 2. DESKTOP REGULAR TABLE */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50/80 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200/70">
                   <tr>
                     <th className="px-3 py-3.5 w-10 text-center">
@@ -2169,7 +2441,9 @@ function LibraryView() {
                             />
                           </td>
                           <td className="px-4 py-3.5">
-                            <span
+                            <button
+                              type="button"
+                              onClick={() => setViewStudent(student)}
                               className={`inline-flex min-w-[3.25rem] items-center justify-center rounded-lg px-2.5 py-1 font-mono font-black ${
                                 student.status === "Left"
                                   ? "bg-slate-200 text-slate-600"
@@ -2179,9 +2453,17 @@ function LibraryView() {
                               }`}
                             >
                               {student.seatNo}
-                            </span>
+                            </button>
                           </td>
-                          <td className="px-5 py-3.5 font-bold text-slate-900">{student.name}</td>
+                          <td className="px-5 py-3.5 font-bold text-slate-900">
+                            <button
+                              type="button"
+                              onClick={() => setViewStudent(student)}
+                              className="hover:text-indigo-600 transition text-left"
+                            >
+                              {student.name}
+                            </button>
+                          </td>
                           <td className="px-5 py-3.5 tabular-nums text-slate-600">
                             <div className="flex items-center gap-2">
                               <span className="font-semibold">{student.phone}</span>
@@ -2447,7 +2729,7 @@ function LibraryView() {
           </section>
         )}
 
-        {/* 🟢 TAB 4: EXPENSES / KHARCHA VIEW */}
+        {/* TAB 4: EXPENSES / KHARCHA VIEW */}
         {activeTab === "expenses" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
             <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-3 sm:items-center justify-between bg-slate-50/70">
@@ -2517,7 +2799,7 @@ function LibraryView() {
         )}
       </main>
 
-      {/* 🟢 FLOATING BULK ACTIONS TOOLBAR */}
+      {/* FLOATING BULK ACTIONS TOOLBAR */}
       {selectedStudentIds.length > 0 && (
         <aside aria-label="Bulk actions toolbar" className="fixed bottom-16 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl flex flex-wrap items-center gap-3 border border-slate-700 backdrop-blur-md animate-in fade-in slide-in-from-bottom-3 max-w-[90vw]">
           <div className="flex items-center gap-2">
@@ -2568,55 +2850,166 @@ function LibraryView() {
       )}
 
       {/* MOBILE BOTTOM NAVIGATION */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-4 py-2.5 flex justify-between items-center shadow-lg">
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-2 py-2 flex items-center justify-around shadow-lg">
         <button
+          type="button"
           onClick={() => setActiveTab("students")}
-          className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
-            activeTab === "students" ? "text-indigo-600" : "text-slate-400"
+          className={`flex-1 flex flex-col items-center py-1 rounded-xl transition ${
+            activeTab === "students" ? "text-indigo-600 bg-indigo-50/60 font-bold" : "text-slate-500"
           }`}
         >
-          <span className="text-base">🎓</span>
-          <span>Students</span>
+          <span className="text-lg leading-none">🎓</span>
+          <span className="text-[10px] mt-1">Students</span>
         </button>
 
         <button
+          type="button"
           onClick={() => setActiveTab("seats")}
-          className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
-            activeTab === "seats" ? "text-indigo-600" : "text-slate-400"
+          className={`flex-1 flex flex-col items-center py-1 rounded-xl transition ${
+            activeTab === "seats" ? "text-indigo-600 bg-indigo-50/60 font-bold" : "text-slate-500"
           }`}
         >
-          <span className="text-base">🪑</span>
-          <span>Seat Map</span>
+          <span className="text-lg leading-none">🪑</span>
+          <span className="text-[10px] mt-1">Seats</span>
         </button>
 
         <button
+          type="button"
           onClick={() => setActiveTab("inquiries")}
-          className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
-            activeTab === "inquiries" ? "text-purple-600" : "text-slate-400"
+          className={`flex-1 flex flex-col items-center py-1 rounded-xl transition ${
+            activeTab === "inquiries" ? "text-purple-600 bg-purple-50/60 font-bold" : "text-slate-500"
           }`}
         >
-          <span className="text-base">📋</span>
-          <span>Leads</span>
+          <span className="text-lg leading-none">📋</span>
+          <span className="text-[10px] mt-1">Leads</span>
         </button>
 
         <button
+          type="button"
           onClick={() => setActiveTab("expenses")}
-          className={`flex flex-col items-center gap-0.5 text-[10px] font-bold ${
-            activeTab === "expenses" ? "text-rose-600" : "text-slate-400"
+          className={`flex-1 flex flex-col items-center py-1 rounded-xl transition ${
+            activeTab === "expenses" ? "text-rose-600 bg-rose-50/60 font-bold" : "text-slate-500"
           }`}
         >
-          <span className="text-base">💰</span>
-          <span>Kharcha</span>
+          <span className="text-lg leading-none">💰</span>
+          <span className="text-[10px] mt-1">Kharcha</span>
         </button>
 
         <button
+          type="button"
           onClick={() => setShowVacantModal(true)}
-          className="flex flex-col items-center gap-0.5 text-[10px] font-bold text-slate-400"
+          className="flex-1 flex flex-col items-center py-1 rounded-xl text-slate-500 active:scale-95 transition"
         >
-          <span className="text-base">⚙️</span>
-          <span>Config</span>
+          <span className="text-lg leading-none">⚙️</span>
+          <span className="text-[10px] mt-1">Config</span>
         </button>
       </nav>
+
+      {/* STUDENT PROFILE & DETAIL VIEW MODAL */}
+      {viewStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div>
+                <span className="text-[10px] font-black uppercase text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
+                  Student Profile
+                </span>
+                <h3 className="text-lg font-black text-slate-950 mt-1">{viewStudent.name}</h3>
+                <p className="text-xs text-slate-500 font-mono">Phone: {viewStudent.phone}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewStudent(null)}
+                className="w-8 h-8 rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200 flex items-center justify-center font-bold text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="space-y-2.5 text-xs">
+              <div className="grid grid-cols-2 gap-2 bg-slate-50 p-3 rounded-2xl border border-slate-200/70">
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 block">Seat Assigned</span>
+                  <span className="text-sm font-black text-slate-900">
+                    {viewStudent.seatNo === "FLOATING" ? "Floating" : `#${viewStudent.seatNo}`}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 block">Shift</span>
+                  <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold mt-0.5 ${shiftBadge(viewStudent.shift)}`}>
+                    {viewStudent.shift}
+                  </span>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div className="p-2.5 rounded-xl border border-slate-100 bg-white shadow-2xs">
+                  <span className="text-[10px] font-bold text-slate-400 block">Monthly Fee</span>
+                  <span className="text-xs font-black text-slate-900">{formatINR(viewStudent.monthlyFee)}</span>
+                </div>
+                <div className="p-2.5 rounded-xl border border-slate-100 bg-white shadow-2xs">
+                  <span className="text-[10px] font-bold text-slate-400 block">Current Status</span>
+                  <span className={`inline-block px-2 py-0.5 rounded-md text-[10px] font-bold mt-0.5 ${statusBadge(viewStudent.status)}`}>
+                    {(viewStudent.balanceDue || 0) > 0 ? "Partial Due" : viewStudent.status}
+                  </span>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-2xl bg-indigo-50/50 border border-indigo-100 space-y-1.5">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Admission / Joining:</span>
+                  <span className="font-bold text-slate-900">{formatDate(viewStudent.joiningDate)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Last Fee Paid Date:</span>
+                  <span className="font-bold text-slate-900">
+                    {viewStudent.lastPaidDate ? formatDate(viewStudent.lastPaidDate) : "Never (New)"}
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Valid Till / Next Due:</span>
+                  <span className="font-bold text-emerald-800">{viewStudent.dueDate}</span>
+                </div>
+                <div className="flex justify-between border-t border-indigo-100 pt-1.5">
+                  <span className="text-slate-700 font-bold">Total Pending Amount:</span>
+                  <span className="font-black text-rose-700 text-sm">
+                    {(viewStudent.balanceDue || 0) > 0
+                      ? formatINR(viewStudent.balanceDue!)
+                      : viewStudent.status === "Paid"
+                        ? "₹0 (Clear)"
+                        : formatINR(viewStudent.monthlyFee * Math.max(1, viewStudent.pendingMonths))}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  const s = viewStudent;
+                  setViewStudent(null);
+                  handleOpenCollect(s);
+                }}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2.5 px-3 rounded-xl text-xs shadow-sm transition active:scale-95"
+              >
+                Collect Fee ₹
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  const s = viewStudent;
+                  setViewStudent(null);
+                  handleOpenHistory(s);
+                }}
+                className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold py-2.5 px-3 rounded-xl text-xs transition active:scale-95"
+              >
+                📜 Full History
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MODAL: ADD EXPENSE */}
       {showExpenseModal && (
