@@ -31,6 +31,7 @@ type Inquiry = {
   name: string;
   phone: string;
   interested_shift: Shift;
+  interested_seat?: string | null;
   notes: string;
   status: "pending" | "admitted" | "closed";
   created_at: string;
@@ -260,7 +261,6 @@ function downloadReceiptPDF(
   doc.save(`${student.name.replace(/\s+/g, "_")}_Fee_Receipt.pdf`);
 }
 
-// 🟢 DUE TODAY & OVERDUE STRICT LOGIC
 function calculateMonthlyDue(
   joiningDateStr: string,
   lastPaidDateStr: string | null,
@@ -346,13 +346,16 @@ function LibraryView() {
   const [formError, setFormError] = useState("");
   const [uploadingLogo, setUploadingLogo] = useState(false);
 
+  // QR Modal State
+  const [showQrModal, setShowQrModal] = useState(false);
+
   // Custom Filter State
   const [showCustomFilter, setShowCustomFilter] = useState(false);
   const [customFilterShift, setCustomFilterShift] = useState<string>("All");
   const [customDateFrom, setCustomDateFrom] = useState<string>("");
   const [customDateTo, setCustomDateTo] = useState<string>("");
 
-  // Student Detail View Modal
+  // Student Profile Detail View Modal
   const [viewStudent, setViewStudent] = useState<Student | null>(null);
 
   const [savingStudent, setSavingStudent] = useState(false);
@@ -497,6 +500,7 @@ function LibraryView() {
         showInquiryModal ||
         showBroadcastModal ||
         showExpenseModal ||
+        showQrModal ||
         viewStudent ||
         collectStudent ||
         historyStudent ||
@@ -507,6 +511,7 @@ function LibraryView() {
         setShowInquiryModal(false);
         setShowBroadcastModal(false);
         setShowExpenseModal(false);
+        setShowQrModal(false);
         setViewStudent(null);
         setEditingInquiryId(null);
         setCollectStudent(null);
@@ -535,6 +540,7 @@ function LibraryView() {
     showInquiryModal,
     showBroadcastModal,
     showExpenseModal,
+    showQrModal,
     viewStudent,
     collectStudent,
     historyStudent,
@@ -985,9 +991,9 @@ function LibraryView() {
   }
 
   function handleConvertInquiryToStudent(inq: Inquiry) {
-    handleOpenAdd();
+    handleOpenAdd(inq.interested_seat || "");
     setForm({
-      seatNo: "",
+      seatNo: inq.interested_seat || "",
       name: inq.name,
       phone: inq.phone,
       shift: inq.interested_shift,
@@ -1042,7 +1048,6 @@ function LibraryView() {
     }
   }
 
-  // 🟢 NAYA FIX: Export CSV with Joining Date, Valid Until & Filter Alignment
   function handleExportCSV() {
     const dataToExport = filtered;
 
@@ -1936,6 +1941,14 @@ function LibraryView() {
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={() => setShowQrModal(true)}
+              title="Student Self-Inquiry QR Code"
+              className="text-xs bg-white hover:bg-indigo-50 text-indigo-700 font-bold px-3 py-2 rounded-xl border border-indigo-200 shadow-xs transition flex items-center gap-1.5"
+            >
+              <span>📱 QR Form</span>
+            </button>
+            <button
+              type="button"
               onClick={handleExportCSV}
               title="Download CSV / Excel"
               className="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold px-3 py-2 rounded-xl border border-slate-200 shadow-xs transition"
@@ -2637,6 +2650,7 @@ function LibraryView() {
                     <th className="px-5 py-3 font-bold">Candidate Name</th>
                     <th className="px-5 py-3 font-bold">Phone & Contact</th>
                     <th className="px-5 py-3 font-bold">Interested Shift</th>
+                    <th className="px-5 py-3 font-bold">Preferred Seat</th>
                     <th className="px-5 py-3 font-bold">Notes / Requirement</th>
                     <th className="px-5 py-3 font-bold">Inquiry Date</th>
                     <th className="px-5 py-3 font-bold text-center">Actions</th>
@@ -2645,7 +2659,7 @@ function LibraryView() {
                 <tbody className="divide-y divide-slate-100 font-medium">
                   {inquiries.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="px-5 py-12 text-center text-slate-400">
+                      <td colSpan={7} className="px-5 py-12 text-center text-slate-400">
                         Abhi tak koi inquiry entry nahi hai. "+ Add Inquiry" se jod sakte hain.
                       </td>
                     </tr>
@@ -2690,6 +2704,15 @@ function LibraryView() {
                           <span className={`inline-flex rounded-md px-2.5 py-0.5 text-[10px] font-bold ${shiftBadge(inq.interested_shift)}`}>
                             {inq.interested_shift}
                           </span>
+                        </td>
+                        <td className="px-5 py-3.5">
+                          {inq.interested_seat ? (
+                            <span className="inline-block bg-indigo-100 border border-indigo-300 text-indigo-900 font-mono font-black text-xs px-2.5 py-0.5 rounded-lg">
+                              #{inq.interested_seat}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic">Not selected</span>
+                          )}
                         </td>
                         <td className="px-5 py-3.5 text-slate-600">{inq.notes || "General Inquiry"}</td>
                         <td className="px-5 py-3.5 text-slate-500">{formatDate(inq.created_at)}</td>
@@ -2904,6 +2927,59 @@ function LibraryView() {
           <span className="text-[10px] mt-1">Config</span>
         </button>
       </nav>
+
+      {/* 🟢 MODAL: SELF-INQUIRY QR CODE */}
+      {showQrModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl text-center space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+              <h3 className="text-sm font-extrabold text-slate-900">Student Self-Inquiry QR</h3>
+              <button
+                type="button"
+                onClick={() => setShowQrModal(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              Is QR ko student scan karke apni self-inquiry bharenge aur vacant seats check karenge.
+            </p>
+
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-center">
+              <img
+                src={`https://quickchart.io/qr?text=${encodeURIComponent(
+                  `${typeof window !== "undefined" ? window.location.origin : ""}/inquiry?lib_id=${currentLib?.id}`
+                )}&size=240&margin=2`}
+                alt="Inquiry QR Code"
+                className="w-48 h-48 rounded-xl shadow-xs"
+              />
+            </div>
+
+            <p className="text-[11px] font-mono font-bold text-slate-600 bg-slate-100 py-1.5 px-3 rounded-lg truncate">
+              {typeof window !== "undefined" ? window.location.origin : ""}/inquiry?lib_id={currentLib?.id}
+            </p>
+
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => window.print()}
+                className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 rounded-xl text-xs transition"
+              >
+                🖨️ Print QR Poster
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowQrModal(false)}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-4 py-2 rounded-xl text-xs transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* STUDENT PROFILE & DETAIL VIEW MODAL */}
       {viewStudent && (
