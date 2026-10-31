@@ -7,6 +7,7 @@ import { supabase } from "@/lib/supabase";
 type Shift = "Morning" | "Evening" | "Full Day" | "Random";
 
 const WA_SERVER_URL = "https://whatsapp-crm-service.onrender.com/api/send-message?secret=89599301";
+const ADMIN_ALERT_PHONE = "8959102057";
 
 // Helper function WhatsApp message deliver karne ke liye
 async function sendWhatsAppAlert(phone: string, message: string) {
@@ -143,7 +144,7 @@ ${libName} में आपकी इन्क्वायरी सफलता
 
 📞 *हेल्पलाइन:* ${libPhone}`;
 
-      // 2. Admin Alert Message (Hindi)
+      // 2. Admin Alert Message (Targeting 8959102057)
       const adminMsg = `*🔔 NEW INQUIRY ALERT (नई इन्क्वायरी)*
 --------------------------------
 *लाइब्रेरी:* ${libName}
@@ -155,9 +156,9 @@ ${libName} में आपकी इन्क्वायरी सफलता
 
 कृपया छात्र से संपर्क करें!`;
 
-      // Background me WhatsApp messages dispatch karein
+      // Student aur Admin (8959102057) dono ko notification dispatch karein
       sendWhatsAppAlert(cleanPhone, studentMsg);
-      sendWhatsAppAlert(libPhone, adminMsg);
+      sendWhatsAppAlert(ADMIN_ALERT_PHONE, adminMsg);
 
       const { data: libData } = await supabase
         .from("libraries")
@@ -213,13 +214,13 @@ ${libName} में आपकी इन्क्वायरी सफलता
         })
         .eq("id", inquiryId);
 
-      // Preferred Seat chunne par Admin ko chota alert
+      // Preferred Seat chunne par Admin (8959102057) ko alert
       const seatChosenMsg = `*📌 SEAT SELECTION UPDATE*
 --------------------------------
 *विद्यार्थी:* ${name.trim()} (${phone})
 *पसंदीदा सीट:* #${seatNo} (${shift} Shift)`;
 
-      sendWhatsAppAlert(libPhone, seatChosenMsg);
+      sendWhatsAppAlert(ADMIN_ALERT_PHONE, seatChosenMsg);
     } catch (err) {
       console.warn("Seat interest update error:", err);
     } finally {
@@ -256,7 +257,8 @@ ${libName} में आपकी इन्क्वायरी सफलता
                 placeholder="Enter Full Name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 p-2.5 text-xs font-medium outline-none focus:ring-2 focus:ring-indigo-500/20"
+                style={{ color: "#0f172a", backgroundColor: "#ffffff" }}
+                className="w-full rounded-xl border border-slate-300 p-2.5 text-xs font-bold text-slate-900 bg-white placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20"
               />
             </div>
 
@@ -268,7 +270,8 @@ ${libName} में आपकी इन्क्वायरी सफलता
                 placeholder="10 Digits Mobile Number"
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 p-2.5 text-xs font-medium font-mono outline-none focus:ring-2 focus:ring-indigo-500/20"
+                style={{ color: "#0f172a", backgroundColor: "#ffffff" }}
+                className="w-full rounded-xl border border-slate-300 p-2.5 text-xs font-bold font-mono text-slate-900 bg-white placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-indigo-500/20"
               />
             </div>
 
@@ -277,7 +280,8 @@ ${libName} में आपकी इन्क्वायरी सफलता
               <select
                 value={shift}
                 onChange={(e) => setShift(e.target.value as Shift)}
-                className="w-full rounded-xl border border-slate-300 p-2.5 text-xs font-bold bg-white outline-none focus:ring-2 focus:ring-indigo-500/20"
+                style={{ color: "#0f172a", backgroundColor: "#ffffff" }}
+                className="w-full rounded-xl border border-slate-300 p-2.5 text-xs font-bold text-slate-900 bg-white outline-none focus:ring-2 focus:ring-indigo-500/20"
               >
                 <option value="Morning">Morning Shift (Subah)</option>
                 <option value="Evening">Evening Shift (Shaam)</option>
@@ -292,7 +296,8 @@ ${libName} में आपकी इन्क्वायरी सफलता
                 placeholder="e.g. Kisi specific exam ki taiyari ya trial demo slot"
                 value={notes}
                 onChange={(e) => setNotes(e.target.value)}
-                className="w-full rounded-xl border border-slate-300 p-2.5 text-xs font-medium outline-none h-20 focus:ring-2 focus:ring-indigo-500/20"
+                style={{ color: "#0f172a", backgroundColor: "#ffffff" }}
+                className="w-full rounded-xl border border-slate-300 p-2.5 text-xs font-bold text-slate-900 bg-white placeholder:text-slate-400 outline-none h-20 focus:ring-2 focus:ring-indigo-500/20"
               />
             </div>
 
