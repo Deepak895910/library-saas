@@ -70,6 +70,36 @@ type LibraryInfo = {
 };
 
 const SUPER_ADMIN_WHATSAPP = "919301530783";
+const WA_SERVER_URL = "https://whatsapp-crm-service.onrender.com/api/send-message?secret=89599301";
+
+// Universal WhatsApp Alert & File Dispatcher (PDF / Image / Text)
+async function sendWhatsAppAlert(
+  phone: string,
+  message: string,
+  fileBase64?: string,
+  fileType: "pdf" | "image" = "pdf",
+  fileName?: string
+) {
+  try {
+    let clean = phone.replace(/\D/g, "").slice(-10);
+    if (clean.length === 10) {
+      clean = "91" + clean;
+    }
+    await fetch(WA_SERVER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        phone: clean,
+        message,
+        fileBase64,
+        fileType,
+        fileName,
+      }),
+    });
+  } catch (err) {
+    console.error("WhatsApp dispatch error:", err);
+  }
+}
 
 function formatINR(amount: number) {
   return new Intl.NumberFormat("en-IN", {
@@ -140,6 +170,7 @@ function getLocalDateString(d: Date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
+// Generates PDF, triggers browser save, and returns clean pure Base64
 function downloadReceiptPDF(
   libName: string,
   ownerName: string,
@@ -150,7 +181,7 @@ function downloadReceiptPDF(
   mode: string,
   paymentDateStr: string = getLocalDateString(),
   validUntilDateStr?: string
-) {
+): string {
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a5" });
   const receiptNo = `LIB-${Date.now().toString().slice(-6)}`;
   const dateStr = formatDate(paymentDateStr);
@@ -259,6 +290,10 @@ function downloadReceiptPDF(
   doc.text(ownerName || "Manager", 111, 182, { align: "center" });
 
   doc.save(`${student.name.replace(/\s+/g, "_")}_Fee_Receipt.pdf`);
+
+  // Strip 'data:application/pdf;base64,' prefix completely
+  const rawDataUri = doc.output("datauristring");
+  return rawDataUri.split(",")[1];
 }
 
 function calculateMonthlyDue(
@@ -346,16 +381,13 @@ function LibraryView() {
   const [formError, setFormError] = useState("");
   const [uploadingLogo, setUploadingLogo] = useState(false);
 
-  // QR Modal State
   const [showQrModal, setShowQrModal] = useState(false);
 
-  // Custom Filter State
   const [showCustomFilter, setShowCustomFilter] = useState(false);
   const [customFilterShift, setCustomFilterShift] = useState<string>("All");
   const [customDateFrom, setCustomDateFrom] = useState<string>("");
   const [customDateTo, setCustomDateTo] = useState<string>("");
 
-  // Student Profile Detail View Modal
   const [viewStudent, setViewStudent] = useState<Student | null>(null);
 
   const [savingStudent, setSavingStudent] = useState(false);
@@ -401,16 +433,6 @@ function LibraryView() {
   const [broadcastMessage, setBroadcastMessage] = useState(
     "Namaste! Hamari library me special admission discount aur peaceful environment available hai. Aaj hi visit karein aur apni seat book karein!"
   );
-
-  const [paymentSuccessData, setPaymentSuccessData] = useState<{
-    student: Student;
-    amount: number;
-    months: number;
-    mode: string;
-    waUrl: string;
-    paymentDate: string;
-    paidUntilDate: string;
-  } | null>(null);
 
   const todayStr = getLocalDateString();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -503,8 +525,7 @@ function LibraryView() {
         showQrModal ||
         viewStudent ||
         collectStudent ||
-        historyStudent ||
-        paymentSuccessData
+        historyStudent
       ) {
         setShowModal(false);
         setShowVacantModal(false);
@@ -516,7 +537,6 @@ function LibraryView() {
         setEditingInquiryId(null);
         setCollectStudent(null);
         setHistoryStudent(null);
-        setPaymentSuccessData(null);
         window.history.pushState({ isRoot: true }, "", window.location.href);
         return;
       }
@@ -544,7 +564,6 @@ function LibraryView() {
     viewStudent,
     collectStudent,
     historyStudent,
-    paymentSuccessData,
   ]);
 
   const loadData = async () => {
@@ -850,29 +869,30 @@ function LibraryView() {
 
   function reminderText(student: Student) {
     const libName = currentLib?.name || "LIBRARY MANAGEMENT";
-    const owner = currentLib?.owner_name || "Owner";
     const totalAmount =
       (student.balanceDue || 0) > 0
         ? student.balanceDue!
         : student.monthlyFee * Math.max(1, student.pendingMonths);
-    const monthsText =
-      (student.balanceDue || 0) > 0
-        ? " (Partial Balance Remaining)"
-        : student.pendingMonths > 1
-          ? ` (${student.pendingMonths} Months Overdue)`
-          : "";
     const seatInfo =
       student.shift === "Random" || student.seatNo === "FLOATING"
-        ? "Floating / Advance Slot"
+        ? "Floating Slot"
         : `Seat ${student.seatNo}`;
-    return `Namaste ${student.name},\n\nThis is a reminder from ${libName}. Your ${seatInfo} monthly fee of ${formatINR(
-      totalAmount
-    )}${monthsText} is ${student.status === "Overdue" ? "overdue" : "due today"}.\n\nPlease complete the payment at your earliest convenience.\n\nThank you,\n${owner}\n${libName}`;
+    
+    return `*📚 ${libName} - फीस सूचना*
+--------------------------------
+*विद्यार्थी:* ${student.name}
+*सीट:* ${seatInfo}
+*बकाया राशि:* ${formatINR(totalAmount)}
+*अंतिम तिथि:* ${student.dueDate}
+
+नमस्ते ${student.name}, आपकी लाइब्रेरी फीस बकाया है। कृपया समय पर नवीनीकरण करें ताकि आपकी सीट सुरक्षित रहे।
+
+📞 *हेल्पलाइन:* ${currentLib?.phone || "9301530783"}`;
   }
 
   function openWhatsApp(student: Student) {
-    const url = `https://wa.me/91${student.phone}?text=${encodeURIComponent(reminderText(student))}`;
-    window.open(url, "_blank", "noopener,noreferrer");
+    sendWhatsAppAlert(student.phone, reminderText(student));
+    showToast(`WhatsApp reminder sent to ${student.name}!`);
   }
 
   const handlePhoneChange = (enteredPhone: string) => {
@@ -1258,6 +1278,20 @@ function LibraryView() {
             last_payment_mode: "Cash",
           })
           .eq("id", s.id);
+
+        const autoReceiptMsg = `*🧾 लाइब्रेरी फीस रसीद (Fee Slip)*
+--------------------------------
+*संस्था:* ${currentLib?.name || "Library Management"}
+*विद्यार्थी का नाम:* ${s.name}
+*सीट नंबर:* ${s.seatNo || "FLOATING"}
+*जमा राशि:* ${formatINR(s.monthlyFee)}
+*भुगतान माध्यम:* Cash
+*वैधता:* ${formatDate(paidUntilStr)}
+*स्थिति:* सफल (Paid) ✅
+
+धन्यवाद! संपर्क: +91 ${currentLib?.phone || "9301530783"}`;
+
+        sendWhatsAppAlert(s.phone, autoReceiptMsg);
       }
 
       if (ledgerInserts.length > 0) {
@@ -1272,7 +1306,7 @@ function LibraryView() {
       );
 
       setSelectedStudentIds([]);
-      showToast(`✓ ${studentsToUpdate.length} students successfully mark paid ho gaye!`);
+      showToast(`✓ ${studentsToUpdate.length} students paid! Receipts delivered on WhatsApp.`);
     } catch (err: any) {
       alert("Bulk payment me error: " + (err.message || "Unknown error"));
     } finally {
@@ -1291,18 +1325,18 @@ function LibraryView() {
 
     if (
       !confirm(
-        `Selected ${dueStudents.length} pending students ke liye WhatsApp chats open karein?`
+        `Selected ${dueStudents.length} pending students ko automated WhatsApp reminders deliver karein?`
       )
     )
       return;
 
     dueStudents.forEach((student, index) => {
       setTimeout(() => {
-        openWhatsApp(student);
-      }, index * 400);
+        sendWhatsAppAlert(student.phone, reminderText(student));
+      }, index * 2000);
     });
 
-    showToast(`${dueStudents.length} WhatsApp reminders open ho gaye!`);
+    showToast(`${dueStudents.length} WhatsApp reminders dispatch ho gaye!`);
     setSelectedStudentIds([]);
   }
 
@@ -1431,6 +1465,7 @@ function LibraryView() {
     }
   }
 
+  // ─── COLLECT FEE + AUTOMATIC CLEAN PDF ATTACHMENT SLIP TO WHATSAPP ─────────
   async function submitCollectFee(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
@@ -1520,17 +1555,14 @@ function LibraryView() {
     );
 
     setCollectStudent(null);
-    showToast(
-      newBalanceDue > 0
-        ? `Partial fees (${formatINR(totalCollected)}) jama hui! Balance: ${formatINR(newBalanceDue)}`
-        : `Fees successfully collect ho gayi (${formatINR(totalCollected)})!`
-    );
 
+    // 1. Download Local PDF & Fetch pure Base64
+    let generatedPdfBase64 = "";
     try {
-      downloadReceiptPDF(
-        currentLib.name || "LIBRARY MANAGEMENT",
-        currentLib.owner_name || "Manager",
-        currentLib.phone || "9301530783",
+      generatedPdfBase64 = downloadReceiptPDF(
+        currentLib?.name || "LIBRARY MANAGEMENT",
+        currentLib?.owner_name || "Manager",
+        currentLib?.phone || "9301530783",
         targetStudent,
         totalCollected,
         countMonths,
@@ -1542,31 +1574,35 @@ function LibraryView() {
       console.error("PDF generation error:", pdfErr);
     }
 
+    // 2. Direct PDF Document Delivery on WhatsApp
     const seatInfo =
       targetStudent.shift === "Random" || targetStudent.seatNo === "FLOATING"
         ? "Floating Slot"
-        : `Seat ${targetStudent.seatNo}`;
+        : `Seat #${targetStudent.seatNo}`;
 
-    const waText = `Namaste ${targetStudent.name},\n\nWe have received your library fee payment of ${formatINR(
-      totalCollected
-    )} for ${countMonths} month(s) via ${chosenMode} (${seatInfo}) on ${formatDate(paymentDateUsed)}.\n\n${
-      newBalanceDue > 0
-        ? `Note: Remaining partial balance is ${formatINR(newBalanceDue)}.`
-        : `Your seat is valid till ${formatDate(paidUntilStr)}.`
-    }\n\nThank you,\n${currentLib.name || "LIBRARY MANAGEMENT"}`;
-    const waUrl = `https://wa.me/91${targetStudent.phone}?text=${encodeURIComponent(waText)}`;
+    const receiptSlipCaption = `*🧾 लाइब्रेरी फीस भुगतान रसीद (Official Receipt)*
+--------------------------------
+*लाइब्रेरी:* ${currentLib?.name || "Library Management"}
+*विद्यार्थी का नाम:* ${targetStudent.name}
+*सीट नंबर:* ${seatInfo}
+*जमा की गई राशि:* ${formatINR(totalCollected)}
+*भुगतान तिथि:* ${formatDate(paymentDateUsed)}
+${
+  newBalanceDue > 0
+    ? `*शेष बकाया राशि:* ${formatINR(newBalanceDue)}`
+    : `*वैधता (Valid Upto):* ${formatDate(paidUntilStr)}`
+}
+*स्थिति:* सफल (Paid & Verified) ✅
 
-    setPaymentSuccessData({
-      student: targetStudent,
-      amount: totalCollected,
-      months: countMonths,
-      mode: chosenMode,
-      waUrl: waUrl,
-      paymentDate: paymentDateUsed,
-      paidUntilDate: paidUntilStr || todayStr,
-    });
+📄 आपकी ऑरिजिनल फीस रसीद (PDF) इस मैसेज के साथ संलग्न है।
 
-    window.open(waUrl, "_blank", "noopener,noreferrer");
+संपर्क: +91 ${currentLib?.phone || "9301530783"}`;
+
+    const pdfName = `${targetStudent.name.replace(/\s+/g, "_")}_Fee_Slip.pdf`;
+
+    sendWhatsAppAlert(targetStudent.phone, receiptSlipCaption, generatedPdfBase64, "pdf", pdfName);
+
+    showToast(`✓ Fees collect ho gayi aur WhatsApp slip PDF deliver ho gayi!`);
   }
 
   async function handleSaveSeatConfiguration() {
@@ -2142,7 +2178,7 @@ function LibraryView() {
           </div>
         )}
 
-        {/* TAB 2: STUDENTS VIEW WITH CUSTOM FILTERS + DETAIL MODAL INTEGRATION */}
+        {/* TAB 2: STUDENTS VIEW */}
         {activeTab === "students" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
             <div className="flex flex-col gap-3 border-b border-slate-100 p-4">
@@ -2186,7 +2222,6 @@ function LibraryView() {
                 />
               </div>
 
-              {/* CUSTOM FILTER PANEL */}
               {showCustomFilter && (
                 <div className="p-3 bg-slate-50/80 rounded-xl border border-slate-200 flex flex-wrap items-center gap-3 animate-in fade-in">
                   <div>
@@ -2241,7 +2276,7 @@ function LibraryView() {
               )}
             </div>
 
-            {/* 📱 1. MOBILE SMART CARD VIEW */}
+            {/* Mobile View */}
             <div className="md:hidden divide-y divide-slate-100 p-2 space-y-2.5">
               {loading && students.length === 0 ? (
                 <div className="p-8 text-center text-slate-400 text-xs">Loading data...</div>
@@ -2262,7 +2297,6 @@ function LibraryView() {
                             : "bg-white border-slate-200/80 shadow-xs"
                       }`}
                     >
-                      {/* Top Header: Checkbox + Seat + Name (Clickable) + Call */}
                       <div className="flex items-center justify-between gap-2">
                         <div className="flex items-center gap-2.5 min-w-0 flex-1">
                           <input
@@ -2304,7 +2338,6 @@ function LibraryView() {
                         </div>
                       </div>
 
-                      {/* Middle Row: Phone + Shift Badge + Due/Status Info */}
                       <div
                         onClick={() => setViewStudent(student)}
                         className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-xs cursor-pointer"
@@ -2342,7 +2375,6 @@ function LibraryView() {
                         </div>
                       </div>
 
-                      {/* Bottom Actions Row */}
                       <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between gap-1.5">
                         {student.status !== "Left" && (
                           <>
@@ -2351,7 +2383,7 @@ function LibraryView() {
                               onClick={() => handleOpenCollect(student)}
                               className="flex-1 bg-indigo-600 text-white font-bold py-1.5 px-2 rounded-xl text-xs shadow-xs hover:bg-indigo-700 active:scale-95 text-center"
                             >
-                              Collect ₹
+                              Collect Fee ₹
                             </button>
                             <button
                               type="button"
@@ -2400,7 +2432,7 @@ function LibraryView() {
               )}
             </div>
 
-            {/* 💻 2. DESKTOP REGULAR TABLE */}
+            {/* Desktop Table */}
             <div className="hidden md:block overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50/80 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-200/70">
@@ -2563,7 +2595,7 @@ function LibraryView() {
                                     onClick={() => handleOpenCollect(student)}
                                     className="rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-indigo-700 transition shadow-xs"
                                   >
-                                    Collect ₹
+                                    Collect Fee ₹
                                   </button>
                                 </>
                               )}
@@ -2752,7 +2784,7 @@ function LibraryView() {
           </section>
         )}
 
-        {/* TAB 4: EXPENSES / KHARCHA VIEW */}
+        {/* TAB 4: EXPENSES VIEW */}
         {activeTab === "expenses" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
             <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-3 sm:items-center justify-between bg-slate-50/70">
@@ -2822,7 +2854,7 @@ function LibraryView() {
         )}
       </main>
 
-      {/* FLOATING BULK ACTIONS TOOLBAR */}
+      {/* Floating Bulk Toolbar */}
       {selectedStudentIds.length > 0 && (
         <aside aria-label="Bulk actions toolbar" className="fixed bottom-16 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl flex flex-wrap items-center gap-3 border border-slate-700 backdrop-blur-md animate-in fade-in slide-in-from-bottom-3 max-w-[90vw]">
           <div className="flex items-center gap-2">
@@ -2840,7 +2872,7 @@ function LibraryView() {
             onClick={handleBulkMarkPaid}
             className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1 shadow-sm disabled:opacity-50"
           >
-            <span>{bulkProcessing ? "..." : "⚡ Mark Paid"}</span>
+            <span>{bulkProcessing ? "..." : "⚡ Mark Paid & Send WA Slips"}</span>
           </button>
 
           <button
@@ -2848,7 +2880,7 @@ function LibraryView() {
             onClick={handleBulkWhatsAppReminders}
             className="bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1 shadow-sm"
           >
-            <span>💬 Bulk WA</span>
+            <span>💬 Bulk WA Reminders</span>
           </button>
 
           {selectedStudentIds.length === 2 && (
@@ -2872,7 +2904,7 @@ function LibraryView() {
         </aside>
       )}
 
-      {/* MOBILE BOTTOM NAVIGATION */}
+      {/* Mobile Navigation */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-2 py-2 flex items-center justify-around shadow-lg">
         <button
           type="button"
@@ -2928,7 +2960,7 @@ function LibraryView() {
         </button>
       </nav>
 
-      {/* 🟢 MODAL: SELF-INQUIRY QR CODE */}
+      {/* Modal: QR */}
       {showQrModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
           <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl text-center space-y-4">
@@ -2981,7 +3013,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* STUDENT PROFILE & DETAIL VIEW MODAL */}
+      {/* Modal: Student Detail */}
       {viewStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
           <div className="w-full max-w-sm rounded-3xl bg-white p-6 shadow-2xl space-y-4 animate-in fade-in zoom-in-95">
@@ -3087,7 +3119,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: ADD EXPENSE */}
+      {/* Modal: Add Expense */}
       {showExpenseModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={handleAddExpense} className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl space-y-3">
@@ -3172,7 +3204,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: ADD / EDIT INQUIRY */}
+      {/* Modal: Add Inquiry */}
       {showInquiryModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={handleAddInquiry} className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl space-y-3">
@@ -3247,7 +3279,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: BROADCAST */}
+      {/* Modal: Broadcast */}
       {showBroadcastModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl space-y-4">
@@ -3280,7 +3312,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: ADD / EDIT STUDENT */}
+      {/* Modal: Add/Edit Student */}
       {showModal && (
         <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-900/40 p-4 sm:items-center backdrop-blur-xs">
           <form onSubmit={handleSaveStudent} className="w-full max-w-md rounded-2xl bg-white p-5 shadow-xl space-y-3">
@@ -3417,7 +3449,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: COLLECT FEE */}
+      {/* Modal: Collect Fee */}
       {collectStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={submitCollectFee} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
@@ -3545,7 +3577,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: VACANT SEATS */}
+      {/* Modal: Vacant Seats */}
       {showVacantModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
@@ -3644,7 +3676,7 @@ function LibraryView() {
         </div>
       )}
 
-      {/* MODAL: PAYMENT HISTORY WITH DELETE BUTTON */}
+      {/* Modal: History */}
       {historyStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl">
@@ -3733,64 +3765,6 @@ function LibraryView() {
                 Close
               </button>
             </div>
-          </div>
-        </div>
-      )}
-
-      {/* MODAL: PAYMENT SUCCESS & RECEIPT POPUP */}
-      {paymentSuccessData && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl text-center space-y-4">
-            <div className="w-14 h-14 bg-emerald-100 text-emerald-700 rounded-full flex items-center justify-center text-2xl mx-auto font-bold">
-              ✓
-            </div>
-            <div>
-              <h3 className="text-base font-bold text-slate-900">Payment Successful!</h3>
-              <p className="text-xs text-slate-500 mt-1">
-                {paymentSuccessData.student.name} ki {formatINR(paymentSuccessData.amount)} fees jama ho gayi hai ({paymentSuccessData.mode}).
-              </p>
-              <p className="text-xs font-bold text-emerald-700 mt-1 bg-emerald-50 py-1 rounded-lg">
-                Valid Till: {formatDate(paymentSuccessData.paidUntilDate)}
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-2 pt-2">
-              <a
-                href={paymentSuccessData.waUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl text-xs flex items-center justify-center gap-1.5"
-              >
-                <span>📲 Open WhatsApp Chat</span>
-              </a>
-              <button
-                type="button"
-                onClick={() => {
-                  downloadReceiptPDF(
-                    currentLib?.name || "LIBRARY MANAGEMENT",
-                    currentLib?.owner_name || "Manager",
-                    currentLib?.phone || "9301530783",
-                    paymentSuccessData.student,
-                    paymentSuccessData.amount,
-                    paymentSuccessData.months,
-                    paymentSuccessData.mode,
-                    paymentSuccessData.paymentDate,
-                    paymentSuccessData.paidUntilDate
-                  );
-                }}
-                className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-2 px-4 rounded-xl text-xs"
-              >
-                📥 Download PDF Again
-              </button>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setPaymentSuccessData(null)}
-              className="text-xs text-slate-400 hover:text-slate-600 pt-1 font-semibold"
-            >
-              Done & Close
-            </button>
           </div>
         </div>
       )}

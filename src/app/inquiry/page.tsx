@@ -6,6 +6,25 @@ import { supabase } from "@/lib/supabase";
 
 type Shift = "Morning" | "Evening" | "Full Day" | "Random";
 
+const WA_SERVER_URL = "https://whatsapp-crm-service.onrender.com/api/send-message?secret=89599301";
+
+// Helper function WhatsApp message deliver karne ke liye
+async function sendWhatsAppAlert(phone: string, message: string) {
+  try {
+    let clean = phone.replace(/\D/g, "").slice(-10);
+    if (clean.length === 10) {
+      clean = "91" + clean;
+    }
+    await fetch(WA_SERVER_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: clean, message }),
+    });
+  } catch (err) {
+    console.error("WhatsApp trigger error:", err);
+  }
+}
+
 function parseCustomSeats(input: string): string[] {
   const parts = input.split(",").map((p) => p.trim()).filter(Boolean);
   const result: string[] = [];
@@ -109,6 +128,37 @@ function InquiryContent() {
         setInquiryId(insertedInq.id);
       }
 
+      // ─── AUTOMATED WHATSAPP TRIGGERS ─────────────────────────
+      // 1. Student Confirmation Message (Hindi)
+      const studentMsg = `*📚 स्वागत है! लाइब्रेरी इन्क्वायरी कन्फर्मेशन*
+--------------------------------
+*नमस्ते ${name.trim()},*
+${libName} में आपकी इन्क्वायरी सफलतापूर्वक दर्ज कर ली गई है।
+
+*विवरण (Details):*
+• *शिफ्ट:* ${shift}
+• *संपर्क:* ${cleanPhone}
+
+सीट उपलब्धता देखने के लिए स्क्रीन पर अपनी पसंदीदा सीट चुनें या हमसे संपर्क करें।
+
+📞 *हेल्पलाइन:* ${libPhone}`;
+
+      // 2. Admin Alert Message (Hindi)
+      const adminMsg = `*🔔 NEW INQUIRY ALERT (नई इन्क्वायरी)*
+--------------------------------
+*लाइब्रेरी:* ${libName}
+*विद्यार्थी:* ${name.trim()}
+*मोबाइल:* ${cleanPhone}
+*शिफ्ट:* ${shift}
+*नोट्स:* ${notes.trim() || "N/A"}
+*तारीख:* ${new Date().toLocaleDateString("en-IN")}
+
+कृपया छात्र से संपर्क करें!`;
+
+      // Background me WhatsApp messages dispatch karein
+      sendWhatsAppAlert(cleanPhone, studentMsg);
+      sendWhatsAppAlert(libPhone, adminMsg);
+
       const { data: libData } = await supabase
         .from("libraries")
         .select("seats_config")
@@ -162,6 +212,14 @@ function InquiryContent() {
           notes: updatedNotes,
         })
         .eq("id", inquiryId);
+
+      // Preferred Seat chunne par Admin ko chota alert
+      const seatChosenMsg = `*📌 SEAT SELECTION UPDATE*
+--------------------------------
+*विद्यार्थी:* ${name.trim()} (${phone})
+*पसंदीदा सीट:* #${seatNo} (${shift} Shift)`;
+
+      sendWhatsAppAlert(libPhone, seatChosenMsg);
     } catch (err) {
       console.warn("Seat interest update error:", err);
     } finally {
@@ -243,7 +301,7 @@ function InquiryContent() {
               disabled={submitting}
               className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 rounded-xl text-xs shadow-md transition active:scale-95 disabled:opacity-50"
             >
-              {submitting ? "Checking Availability..." : "Check Available Seats & Submit 🚀"}
+              {submitting ? "Checking Availability & Notifying..." : "Check Available Seats & Submit 🚀"}
             </button>
           </form>
         ) : (
@@ -254,7 +312,7 @@ function InquiryContent() {
             <div>
               <h2 className="text-base font-black text-slate-900">Inquiry Received, {name}!</h2>
               <p className="text-xs text-slate-500 mt-1">
-                Aapka record library reception desk par save ho gaya hai.
+                Aapka record library desk par save ho gaya hai aur WhatsApp par confirmation bhej diya gaya hai.
               </p>
             </div>
 
