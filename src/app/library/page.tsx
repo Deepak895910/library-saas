@@ -867,35 +867,52 @@ function LibraryView() {
     window.setTimeout(() => setToast(null), 2400);
   }
 
-  // ─── 5-DAY REGULAR HINDI FEE REMINDER TEMPLATES ──────────────────────────
-  function reminderText(student: Student) {
-    const contact = currentLib?.phone || "9301530783";
-    const seatInfo =
-      student.shift === "Random" || student.seatNo === "FLOATING"
-        ? "Floating Slot"
-        : student.seatNo;
+// ─── 5-DAY POLITE HINDI FEE REMINDER TEMPLATES ──────────────────────────
+function reminderText(student: Student) {
+  const contact = currentLib?.phone || "9301530783";
+  const seatInfo =
+    student.shift === "Random" || student.seatNo === "FLOATING"
+      ? "Floating Slot"
+      : student.seatNo;
 
-    const totalAmount =
-      (student.balanceDue || 0) > 0
-        ? student.balanceDue!
-        : student.monthlyFee * Math.max(1, student.pendingMonths);
-    const formattedAmt = `₹${totalAmount}`;
+  const totalAmount =
+    (student.balanceDue || 0) > 0
+      ? student.balanceDue!
+      : student.monthlyFee * Math.max(1, student.pendingMonths);
+  const formattedAmt = `₹${totalAmount}`;
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
 
-    let diffDays = 0;
-    if (student.dueDate && student.dueDate !== "-") {
-      const dueTime = new Date(student.dueDate).getTime();
-      if (!isNaN(dueTime)) {
-        const diffMs = today.getTime() - dueTime;
-        diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  let diffDays = 0;
+  if (student.dueDate && student.dueDate !== "-") {
+    let due = new Date(student.dueDate);
+    if (isNaN(due.getTime())) {
+      const monthsMap: Record<string, number> = {
+        jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+        jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+      };
+      const parts = student.dueDate.replace(/,/g, "").split(/\s+/);
+      if (parts.length >= 3) {
+        const day = parseInt(parts[0], 10);
+        const monthKey = parts[1].slice(0, 3).toLowerCase();
+        const year = parseInt(parts[2], 10);
+        if (!isNaN(day) && monthsMap[monthKey] !== undefined && !isNaN(year)) {
+          due = new Date(year, monthsMap[monthKey], day);
+        }
       }
     }
 
-    // Day 1: Due Date / First Day
-    if (diffDays <= 0) {
-      return `*📚 लाइब्रेरी फीस सूचना (Day 1)*
+    if (!isNaN(due.getTime())) {
+      due.setHours(0, 0, 0, 0);
+      const diffMs = today.getTime() - due.getTime();
+      diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    }
+  }
+
+  // Day 1: Due Date / First Day
+  if (diffDays <= 0) {
+    return `*📚 लाइब्रेरी फीस सूचना (Day 1)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
@@ -905,11 +922,11 @@ function LibraryView() {
 नमस्ते ${student.name}, आपकी लाइब्रेरी की मासिक फीस का समय हो चुका है। कृपया अपनी पढ़ाई बिना किसी रुकावट के जारी रखने के लिए समय पर फीस जमा करें।
 
 📞 *हेल्पडेस्क / UPI:* ${contact}`;
-    }
+  }
 
-    // Day 2: 1 Day Overdue
-    if (diffDays === 1) {
-      return `*⏳ लाइब्रेरी फीस स्मरण (Day 2)*
+  // Day 2: 1 Day Overdue
+  if (diffDays === 1) {
+    return `*⏳ लाइब्रेरी फीस स्मरण (Day 2)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
@@ -918,11 +935,11 @@ function LibraryView() {
 नमस्ते ${student.name}, आपकी मासिक फीस कल देय थी जो अभी तक प्राप्त नहीं हुई है। असुविधा से बचने के लिए कृपया आज अपनी फीस जमा कराएं।
 
 📞 *हेल्पडेस्क / UPI:* ${contact}`;
-    }
+  }
 
-    // Day 3: 2-3 Days Overdue
-    if (diffDays === 2 || diffDays === 3) {
-      return `*⚠️ लाइब्रेरी फीस बकाया सूचना (Day 3)*
+  // Day 3: 2-3 Days Overdue
+  if (diffDays === 2 || diffDays === 3) {
+    return `*⚠️ लाइब्रेरी फीस बकाया सूचना (Day 3)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
@@ -933,25 +950,25 @@ function LibraryView() {
 यदि आप फीस जमा कर चुके हैं, तो कृपया रसीद साझा करें।
 
 📞 *हेल्पडेस्क / UPI:* ${contact}`;
-    }
+  }
 
-    // Day 4: 4 Days Overdue
-    if (diffDays === 4) {
-      return `*🚨 जरूरी सूचना: (Day 4)*
+  // Day 4: 4 Days Overdue
+  if (diffDays === 4) {
+    return `*🚨 जरूरी सूचना: (Day 4)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
 *बकाया राशि:* ${formattedAmt}
 
-मस्ते ${student.name} जी, आपकी मासिक फीस पिछले 4 दिनों से बकाया चल रही है। नए विद्यार्थियों के आग्रह के कारण कृपया हमें यह अवगत कराएं कि क्या आप इसी सीट (${seatInfo}) को आगे जारी रखना चाहते हैं? 
+नमस्ते ${student.name} जी, आपकी मासिक फीस पिछले 4 दिनों से बकाया चल रही है। नए विद्यार्थियों के आग्रह के कारण कृपया हमें यह अवगत कराएं कि क्या आप इसी सीट (${seatInfo}) को आगे जारी रखना चाहते हैं? 
 
 कृपया आज संपर्क कर अपनी सीट सुनिश्चित करा लें।
 
 📞 *तुरंत संपर्क करें:* ${contact}`;
-    }
+  }
 
-    // Day 5+: 5 Days or more Overdue (Final Notice)
-    return `*❌ अंतिम नोटिस:  (Day 5)*
+  // Day 5+: 5 Days or more Overdue (Final Notice)
+  return `*❌ अंतिम नोटिस: (Day 5)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
@@ -961,12 +978,12 @@ function LibraryView() {
 
 यदि आप अपनी सीट सुरक्षित रखना चाहते हैं, तो तुरंत संपर्क करें:
 📞 *एडमिन:* ${contact}`;
-  }
+}
 
-  function openWhatsApp(student: Student) {
-    sendWhatsAppAlert(student.phone, reminderText(student));
-    showToast(`WhatsApp reminder sent to ${student.name}!`);
-  }
+function openWhatsApp(student: Student) {
+  sendWhatsAppAlert(student.phone, reminderText(student));
+  showToast(`WhatsApp reminder sent to ${student.name}!`);
+}
 
   const handlePhoneChange = (enteredPhone: string) => {
     const cleanPhone = enteredPhone.replace(/\D/g, "").slice(-10);
