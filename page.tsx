@@ -867,8 +867,9 @@ function LibraryView() {
     window.setTimeout(() => setToast(null), 2400);
   }
 
-  // ─── 5-DAY REGULAR HINDI FEE REMINDER TEMPLATES ──────────────────────────
+  // ─── 5-DAY POLITE HINDI FEE REMINDER TEMPLATES ──────────────────────────
   function reminderText(student: Student) {
+    const libName = currentLib?.name || "लाइब्रेरी";
     const contact = currentLib?.phone || "9301530783";
     const seatInfo =
       student.shift === "Random" || student.seatNo === "FLOATING"
@@ -885,17 +886,36 @@ function LibraryView() {
     today.setHours(0, 0, 0, 0);
 
     let diffDays = 0;
+
+    // "28 Oct 2026" aur standard formats dono ko safely parse karega
     if (student.dueDate && student.dueDate !== "-") {
-      const dueTime = new Date(student.dueDate).getTime();
-      if (!isNaN(dueTime)) {
-        const diffMs = today.getTime() - dueTime;
+      let due = new Date(student.dueDate);
+      if (isNaN(due.getTime())) {
+        const monthsMap: Record<string, number> = {
+          jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+          jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+        };
+        const parts = student.dueDate.replace(/,/g, "").split(/\s+/);
+        if (parts.length >= 3) {
+          const day = parseInt(parts[0], 10);
+          const monthKey = parts[1].slice(0, 3).toLowerCase();
+          const year = parseInt(parts[2], 10);
+          if (!isNaN(day) && monthsMap[monthKey] !== undefined && !isNaN(year)) {
+            due = new Date(year, monthsMap[monthKey], day);
+          }
+        }
+      }
+
+      if (!isNaN(due.getTime())) {
+        due.setHours(0, 0, 0, 0);
+        const diffMs = today.getTime() - due.getTime();
         diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
       }
     }
 
-    // Day 1: Due Date / First Day
+    // Day 1: Due date wale din
     if (diffDays <= 0) {
-      return `*📚 लाइब्रेरी फीस सूचना (Day 1)*
+      return `*📚 ${libName} - मासिक फीस स्मरण (Day 1)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
