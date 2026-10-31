@@ -867,9 +867,8 @@ function LibraryView() {
     window.setTimeout(() => setToast(null), 2400);
   }
 
-  // ─── 5-DAY POLITE HINDI FEE REMINDER TEMPLATES ──────────────────────────
+  // ─── 5-DAY REGULAR HINDI FEE REMINDER TEMPLATES ──────────────────────────
   function reminderText(student: Student) {
-    const libName = currentLib?.name || "लाइब्रेरी";
     const contact = currentLib?.phone || "9301530783";
     const seatInfo =
       student.shift === "Random" || student.seatNo === "FLOATING"
@@ -886,98 +885,84 @@ function LibraryView() {
     today.setHours(0, 0, 0, 0);
 
     let diffDays = 0;
-
-    // "28 Oct 2026" aur standard formats dono ko safely parse karega
     if (student.dueDate && student.dueDate !== "-") {
-      let due = new Date(student.dueDate);
-      if (isNaN(due.getTime())) {
-        const monthsMap: Record<string, number> = {
-          jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
-          jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
-        };
-        const parts = student.dueDate.replace(/,/g, "").split(/\s+/);
-        if (parts.length >= 3) {
-          const day = parseInt(parts[0], 10);
-          const monthKey = parts[1].slice(0, 3).toLowerCase();
-          const year = parseInt(parts[2], 10);
-          if (!isNaN(day) && monthsMap[monthKey] !== undefined && !isNaN(year)) {
-            due = new Date(year, monthsMap[monthKey], day);
-          }
-        }
-      }
-
-      if (!isNaN(due.getTime())) {
-        due.setHours(0, 0, 0, 0);
-        const diffMs = today.getTime() - due.getTime();
+      const dueTime = new Date(student.dueDate).getTime();
+      if (!isNaN(dueTime)) {
+        const diffMs = today.getTime() - dueTime;
         diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
       }
     }
 
-    // Day 1: Due date wale din
+    // Day 1: Due Date / First Day
     if (diffDays <= 0) {
-      return `*📚 ${libName} - मासिक फीस स्मरण (Day 1)*
+      return `*📚 लाइब्रेरी फीस सूचना (Day 1)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
 *अंतिम तिथि:* ${student.dueDate}
-*फीस राशि:* ${formattedAmt}
+*कुल फीस:* ${formattedAmt}
 
-नमस्ते ${student.name} जी, आशा है आपकी पढ़ाई अच्छी चल रही होगी। आपकी इस माह की लाइब्रेरी फीस का समय हो चुका है। कृपया समय मिलने पर अपनी फीस जमा कराएं ताकि आपकी सीट निर्बाध जारी रहे।
+नमस्ते ${student.name}, आपकी लाइब्रेरी की मासिक फीस का समय हो चुका है। कृपया अपनी पढ़ाई बिना किसी रुकावट के जारी रखने के लिए समय पर फीस जमा करें।
 
 📞 *हेल्पडेस्क / UPI:* ${contact}`;
     }
 
-    // Day 2: 1 Din Baad (Polite Follow-up)
+    // Day 2: 1 Day Overdue
     if (diffDays === 1) {
-      return `*⏳ ${libName} - फीस नवीनीकरण सूचना (Day 2)*
+      return `*⏳ लाइब्रेरी फीस स्मरण (Day 2)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
 *बकाया राशि:* ${formattedAmt}
 
-नमस्ते ${student.name} जी, एक विनम्र स्मरण कि आपकी लाइब्रेरी फीस कल देय थी। यदि आपने पहले ही भुगतान कर दिया है तो कृपया हमें सूचित करें, अन्यथा आज समय निकालकर फीस रिन्यू कराने का कष्ट करें।
+नमस्ते ${student.name}, आपकी मासिक फीस कल देय थी जो अभी तक प्राप्त नहीं हुई है। असुविधा से बचने के लिए कृपया आज अपनी फीस जमा कराएं।
 
 📞 *हेल्पडेस्क / UPI:* ${contact}`;
     }
 
-    // Day 3: 2-3 Din Baad (Gentle Request)
+    // Day 3: 2-3 Days Overdue
     if (diffDays === 2 || diffDays === 3) {
-      return `*📖 ${libName} - विनम्र स्मरण (Day 3)*
+      return `*⚠️ लाइब्रेरी फीस बकाया सूचना (Day 3)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
 *बकाया राशि:* ${formattedAmt}
 
-नमस्ते ${student.name} जी, आपकी लाइब्रेरी फीस पिछले कुछ दिनों से लंबित है। अध्ययन व्यवस्था और सीट प्रबंधन को सुचारु बनाए रखने हेतु कृपया आज अपनी फीस जमा कराकर सहयोग प्रदान करें।
+नमस्ते ${student.name}, आपकी लाइब्रेरी फीस पिछले 3 दिनों से बकाया है। कृपया आज ही अपनी सीट का नवीनीकरण (रिन्यू) कराएं। 
+
+यदि आप फीस जमा कर चुके हैं, तो कृपया रसीद साझा करें।
 
 📞 *हेल्पडेस्क / UPI:* ${contact}`;
     }
 
-    // Day 4: 4 Din Baad (Seat Confirmation Request)
+    // Day 4: 4 Days Overdue
     if (diffDays === 4) {
-      return `*ℹ️ ${libName} - सीट पुष्टि अनुरोध (Day 4)*
+      return `*🚨 जरूरी सूचना: सीट निरस्तीकरण चेतावनी (Day 4)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
 *बकाया राशि:* ${formattedAmt}
 
-नमस्ते ${student.name} जी, आपकी मासिक फीस पिछले 4 दिनों से बकाया चल रही है। नए विद्यार्थियों के आग्रह के कारण कृपया हमें यह अवगत कराएं कि क्या आप इसी सीट (${seatInfo}) को आगे जारी रखना चाहते हैं? 
+नमस्ते ${student.name}, आपकी फीस बकाया हुए 4 दिन बीत चुके हैं।
 
-कृपया आज संपर्क कर अपनी सीट सुनिश्चित करा लें।
+*ध्यान दें:* यदि कल तक फीस जमा करना अनिवार्य हैं अन्‍यथा आपकी सीट (${seatInfo}) किसी अन्य विद्यार्थी को आवंटित (allocate) कर दी जाएगी।
+किसी प्रकार की समस्‍या होने पर हमसे संपर्क करें।
 
-📞 *हेल्पडेस्क / UPI:* ${contact}`;
+📞 *तुरंत संपर्क करें:* ${contact}`;
     }
 
-    // Day 5+: 5 Din ya usse zyada (Polite Final Follow-up)
-    return `*📩 ${libName} - विशेष अनुरोध (Day 5)*
+    // Day 5+: 5 Days or more Overdue (Final Notice)
+    return `*❌ अंतिम नोटिस:  (Day 5)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
 *बकाया राशि:* ${formattedAmt}
 
-नमस्ते ${student.name} जी, आपकी लाइब्रेरी फीस 5 दिनों से लंबित है। सीट की निरंतरता बनाए रखने के लिए आपसे सविनय निवेदन है कि आज प्रबंधन से संपर्क कर अपनी स्थिति स्पष्ट करने की कृपा करें, ताकि हम आपकी सीट सुरक्षित रख सकें।
+नमस्ते ${student.name}, बार-बार याद दिलाने के बाद भी आपकी फीस जमा नहीं हुई है।
 
-📞 *हेल्पडेस्क / संपर्क:* ${contact}`;
+मस्ते ${student.name} जी, आपकी लाइब्रेरी फीस 5 दिनों से लंबित है। सीट की निरंतरता बनाए रखने के लिए आपसे सविनय निवेदन है कि आज प्रबंधन से संपर्क कर अपनी स्थिति स्पष्ट करने की कृपा करें, ताकि हम आपकी सीट सुरक्षित रख सकें।
+
+📞 *एडमिन:* ${contact}`;
   }
 
   function openWhatsApp(student: Student) {
