@@ -22,13 +22,26 @@ export async function GET() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const { data: students, error } = await (supabase as any)
+    // Fetch students without direct join
+    const { data: students, error: studentErr } = await (supabase as any)
       .from("students")
-      .select("*, libraries(name, phone)")
+      .select("*")
       .neq("status", "left");
 
-    if (error || !students) {
-      return NextResponse.json({ success: false, error: error?.message });
+    if (studentErr || !students) {
+      return NextResponse.json({ success: false, error: studentErr?.message });
+    }
+
+    // Fetch libraries separately to avoid schema relationship error
+    const { data: libraries } = await (supabase as any)
+      .from("libraries")
+      .select("id, name, phone");
+
+    const libraryMap = new Map();
+    if (libraries) {
+      libraries.forEach((lib: any) => {
+        libraryMap.set(String(lib.id), lib);
+      });
     }
 
     let dispatchedCount = 0;
@@ -66,10 +79,11 @@ export async function GET() {
 
       if (diffDays < 0) continue;
 
-      const libName = student.libraries?.name || "लाइब्रेरी";
-      const contact = student.libraries?.phone || "9301530783";
-      const seatInfo = student.seat_no === "FLOATING" ? "Floating Slot" : student.seat_no;
-      const amount = balance > 0 ? balance : student.monthly_fee;
+      const libObj = student.library_id ? libraryMap.get(String(student.library_id)) : null;
+      const libName = libObj?.name || "लाइब्रेरी";
+      const contact = libObj?.phone || "9301530783";
+      const seatInfo = student.seat_no === "FLOATING" ? "Floating Slot" : (student.seat_no || "N/A");
+      const amount = balance > 0 ? balance : (student.monthly_fee || 0);
       const formattedAmt = `₹${amount}`;
 
       let msg = "";
