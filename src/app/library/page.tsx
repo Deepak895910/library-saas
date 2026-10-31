@@ -867,27 +867,102 @@ function LibraryView() {
     window.setTimeout(() => setToast(null), 2400);
   }
 
+  // ─── 5-DAY REGULAR HINDI FEE REMINDER TEMPLATES ──────────────────────────
   function reminderText(student: Student) {
-    const libName = currentLib?.name || "LIBRARY MANAGEMENT";
+    const contact = currentLib?.phone || "9301530783";
+    const seatInfo =
+      student.shift === "Random" || student.seatNo === "FLOATING"
+        ? "Floating Slot"
+        : student.seatNo;
+
     const totalAmount =
       (student.balanceDue || 0) > 0
         ? student.balanceDue!
         : student.monthlyFee * Math.max(1, student.pendingMonths);
-    const seatInfo =
-      student.shift === "Random" || student.seatNo === "FLOATING"
-        ? "Floating Slot"
-        : `Seat ${student.seatNo}`;
-    
-    return `*📚 ${libName} - फीस सूचना*
+    const formattedAmt = `₹${totalAmount}`;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    let diffDays = 0;
+    if (student.dueDate && student.dueDate !== "-") {
+      const dueTime = new Date(student.dueDate).getTime();
+      if (!isNaN(dueTime)) {
+        const diffMs = today.getTime() - dueTime;
+        diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      }
+    }
+
+    // Day 1: Due Date / First Day
+    if (diffDays <= 0) {
+      return `*📚 लाइब्रेरी फीस सूचना (Day 1)*
 --------------------------------
-*विद्यार्थी:* ${student.name}
-*सीट:* ${seatInfo}
-*बकाया राशि:* ${formatINR(totalAmount)}
+*विद्यार्थी का नाम:* ${student.name}
+*सीट नंबर:* ${seatInfo}
 *अंतिम तिथि:* ${student.dueDate}
+*कुल फीस:* ${formattedAmt}
 
-नमस्ते ${student.name}, आपकी लाइब्रेरी फीस बकाया है। कृपया समय पर नवीनीकरण करें ताकि आपकी सीट सुरक्षित रहे।
+नमस्ते ${student.name}, आपकी लाइब्रेरी की मासिक फीस का समय हो चुका है। कृपया अपनी पढ़ाई बिना किसी रुकावट के जारी रखने के लिए समय पर फीस जमा करें।
 
-📞 *हेल्पलाइन:* ${currentLib?.phone || "9301530783"}`;
+📞 *हेल्पडेस्क / UPI:* ${contact}`;
+    }
+
+    // Day 2: 1 Day Overdue
+    if (diffDays === 1) {
+      return `*⏳ लाइब्रेरी फीस स्मरण (Day 2)*
+--------------------------------
+*विद्यार्थी का नाम:* ${student.name}
+*सीट नंबर:* ${seatInfo}
+*बकाया राशि:* ${formattedAmt}
+
+नमस्ते ${student.name}, आपकी मासिक फीस कल देय थी जो अभी तक प्राप्त नहीं हुई है। असुविधा से बचने के लिए कृपया आज अपनी फीस जमा कराएं।
+
+📞 *हेल्पडेस्क / UPI:* ${contact}`;
+    }
+
+    // Day 3: 2-3 Days Overdue
+    if (diffDays === 2 || diffDays === 3) {
+      return `*⚠️ लाइब्रेरी फीस बकाया सूचना (Day 3)*
+--------------------------------
+*विद्यार्थी का नाम:* ${student.name}
+*सीट नंबर:* ${seatInfo}
+*बकाया राशि:* ${formattedAmt}
+
+नमस्ते ${student.name}, आपकी लाइब्रेरी फीस पिछले 3 दिनों से बकाया है। कृपया आज ही अपनी सीट का नवीनीकरण (रिन्यू) कराएं। 
+
+यदि आप फीस जमा कर चुके हैं, तो कृपया रसीद साझा करें।
+
+📞 *हेल्पडेस्क / UPI:* ${contact}`;
+    }
+
+    // Day 4: 4 Days Overdue
+    if (diffDays === 4) {
+      return `*🚨 जरूरी सूचना: सीट निरस्तीकरण चेतावनी (Day 4)*
+--------------------------------
+*विद्यार्थी का नाम:* ${student.name}
+*सीट नंबर:* ${seatInfo}
+*बकाया राशि:* ${formattedAmt}
+
+नमस्ते ${student.name}, आपकी फीस बकाया हुए 4 दिन बीत चुके हैं। वेटिंग लिस्ट में नए विद्यार्थी सीट के लिए प्रतीक्षा कर रहे हैं।
+
+*ध्यान दें:* यदि कल तक फीस जमा नहीं होती है, तो आपकी सीट (${seatInfo}) किसी अन्य विद्यार्थी को आवंटित (allocate) कर दी जाएगी।
+
+📞 *तुरंत संपर्क करें:* ${contact}`;
+    }
+
+    // Day 5+: 5 Days or more Overdue (Final Notice)
+    return `*❌ अंतिम नोटिस: सीट निरस्तीकरण (Day 5)*
+--------------------------------
+*विद्यार्थी का नाम:* ${student.name}
+*सीट नंबर:* ${seatInfo}
+*बकाया राशि:* ${formattedAmt}
+
+नमस्ते ${student.name}, बार-बार याद दिलाने के बाद भी आपकी फीस जमा नहीं हुई है।
+
+नियम अनुसार आज शाम तक आपकी सीट (${seatInfo}) निरस्त करके नए विद्यार्थी को आवंटित की जा रही है और आपका लाइब्रेरी प्रवेश बंद किया जा रहा है।
+
+यदि आप अपनी सीट सुरक्षित रखना चाहते हैं, तो तुरंत संपर्क करें:
+📞 *एडमिन:* ${contact}`;
   }
 
   function openWhatsApp(student: Student) {
