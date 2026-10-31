@@ -3,9 +3,9 @@ import { supabase } from "@/lib/supabase";
 
 const WA_SERVER_URL = "https://whatsapp-crm-service.onrender.com/api/send-message?secret=89599301";
 
-async function sendWhatsAppAlert(phone, message) {
+async function sendWhatsAppAlert(phone: any, message: string) {
   try {
-    let clean = phone.replace(/\D/g, "").slice(-10);
+    let clean = String(phone || "").replace(/\D/g, "").slice(-10);
     if (clean.length === 10) clean = "91" + clean;
     await fetch(WA_SERVER_URL, {
       method: "POST",
@@ -22,7 +22,7 @@ export async function GET() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const { data: students, error } = await supabase
+    const { data: students, error } = await (supabase as any)
       .from("students")
       .select("*, libraries(name, phone)")
       .neq("status", "left");
@@ -33,7 +33,7 @@ export async function GET() {
 
     let dispatchedCount = 0;
 
-    for (const student of students) {
+    for (const student of (students as any[])) {
       const balance = Number(student.balance_due || 0);
       const isPaid = student.status === "paid" && balance === 0;
       if (isPaid) continue;
@@ -42,17 +42,17 @@ export async function GET() {
       if (student.due_date && student.due_date !== "-") {
         let due = new Date(student.due_date);
         if (isNaN(due.getTime())) {
-          const monthsMap = {
+          const monthsMap: Record<string, number> = {
             jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
             jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
           };
-          const parts = student.due_date.replace(/,/g, "").split(/\s+/);
+          const parts = String(student.due_date).replace(/,/g, "").split(/\s+/);
           if (parts.length >= 3) {
             const day = parseInt(parts[0], 10);
             const monthKey = parts[1].slice(0, 3).toLowerCase();
             const year = parseInt(parts[2], 10);
-            if (!isNaN(day) && monthsMap[monthKey] !== undefined && !isNaN(year)) {
-              due = new Date(year, monthsMap[monthKey], day);
+            if (!isNaN(day) && (monthKey in monthsMap) && !isNaN(year)) {
+              due = new Date(year, (monthsMap as any)[monthKey], day);
             }
           }
         }
@@ -92,7 +92,7 @@ export async function GET() {
     }
 
     return NextResponse.json({ success: true, count: dispatchedCount });
-  } catch (err) {
-    return NextResponse.json({ success: false, error: err.message }, { status: 500 });
+  } catch (err: any) {
+    return NextResponse.json({ success: false, error: err?.message || "Internal error" }, { status: 500 });
   }
 }
