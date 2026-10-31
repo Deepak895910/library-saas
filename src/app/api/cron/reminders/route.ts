@@ -3,7 +3,7 @@ import { supabase } from "@/lib/supabase";
 
 const WA_SERVER_URL = "https://whatsapp-crm-service.onrender.com/api/send-message?secret=89599301";
 
-async function sendWhatsAppAlert(phone: string, message: string) {
+async function sendWhatsAppAlert(phone, message) {
   try {
     let clean = phone.replace(/\D/g, "").slice(-10);
     if (clean.length === 10) clean = "91" + clean;
@@ -22,7 +22,6 @@ export async function GET() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    // Sabhi active students jinka status left nahi hai
     const { data: students, error } = await supabase
       .from("students")
       .select("*, libraries(name, phone)")
@@ -37,14 +36,13 @@ export async function GET() {
     for (const student of students) {
       const balance = Number(student.balance_due || 0);
       const isPaid = student.status === "paid" && balance === 0;
-      if (isPaid) continue; // Fee clear hai toh skip karein
+      if (isPaid) continue;
 
-      // Due date calculation
       let diffDays = 0;
       if (student.due_date && student.due_date !== "-") {
         let due = new Date(student.due_date);
         if (isNaN(due.getTime())) {
-          const monthsMap: Record<string, number> = {
+          const monthsMap = {
             jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
             jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
           };
@@ -66,7 +64,6 @@ export async function GET() {
         }
       }
 
-      // Sirf unko bhejna hai jinki due date aaj hai ya overdue ho chuka hai (Day 1 se 5+)
       if (diffDays < 0) continue;
 
       const libName = student.libraries?.name || "लाइब्रेरी";
@@ -78,69 +75,24 @@ export async function GET() {
       let msg = "";
 
       if (diffDays === 0) {
-        msg = `*📚 ${libName} - मासिक फीस स्मरण (Day 1)*
---------------------------------
-*विद्यार्थी का नाम:* ${student.name}
-*सीट नंबर:* ${seatInfo}
-*अंतिम तिथि:* ${student.due_date}
-*फीस राशि:* ${formattedAmt}
-
-नमस्ते ${student.name} जी, आशा है आपकी पढ़ाई अच्छी चल रही होगी। आपकी इस माह की लाइब्रेरी फीस का समय हो चुका है। कृपया समय मिलने पर अपनी फीस जमा कराएं ताकि आपकी सीट निर्बाध जारी रहे।
-
-📞 *हेल्पडेस्क / UPI:* ${contact}`;
+        msg = `*📚 ${libName} - मासिक फीस स्मरण (Day 1)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*अंतिम तिथि:* ${student.due_date}\n*फीस राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, आशा है आपकी पढ़ाई अच्छी चल रही होगी। आपकी इस माह की लाइब्रेरी फीस का समय हो चुका है। कृपया समय मिलने पर अपनी फीस जमा कराएं ताकि आपकी सीट निर्बाध जारी रहे।\n\n📞 *हेल्पडेस्क / UPI:* ${contact}`;
       } else if (diffDays === 1) {
-        msg = `*⏳ ${libName} - फीस नवीनीकरण सूचना (Day 2)*
---------------------------------
-*विद्यार्थी का नाम:* ${student.name}
-*सीट नंबर:* ${seatInfo}
-*बकाया राशि:* ${formattedAmt}
-
-नमस्ते ${student.name} जी, एक विनम्र स्मरण कि आपकी लाइब्रेरी फीस कल देय थी। यदि आपने पहले ही भुगतान कर दिया है तो कृपया हमें सूचित करें, अन्यथा आज समय निकालकर फीस रिन्यू कराने का कष्ट करें।
-
-📞 *हेल्पडेस्क / UPI:* ${contact}`;
+        msg = `*⏳ ${libName} - फीस नवीनीकरण सूचना (Day 2)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*बकाया राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, एक विनम्र स्मरण कि आपकी लाइब्रेरी फीस कल देय थी। यदि आपने पहले ही भुगतान कर दिया है तो कृपया हमें सूचित करें, अन्यथा आज समय निकालकर फीस रिन्यू कराने का कष्ट करें।\n\n📞 *हेल्पडेस्क / UPI:* ${contact}`;
       } else if (diffDays === 2 || diffDays === 3) {
-        msg = `*📖 ${libName} - विनम्र स्मरण (Day 3)*
---------------------------------
-*विद्यार्थी का नाम:* ${student.name}
-*सीट नंबर:* ${seatInfo}
-*बकाया राशि:* ${formattedAmt}
-
-नमस्ते ${student.name} जी, आपकी लाइब्रेरी फीस पिछले कुछ दिनों से लंबित है। अध्ययन व्यवस्था और सीट प्रबंधन को सुचारु बनाए रखने हेतु कृपया आज अपनी फीस जमा कराकर सहयोग प्रदान करें।
-
-📞 *हेल्पडेस्क / UPI:* ${contact}`;
+        msg = `*📖 ${libName} - विनम्र स्मरण (Day 3)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*बकाया राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, आपकी लाइब्रेरी फीस पिछले कुछ दिनों से लंबित है। अध्ययन व्यवस्था और सीट प्रबंधन को सुचारु बनाए रखने हेतु कृपया आज अपनी फीस जमा कराकर सहयोग प्रदान करें।\n\n📞 *हेल्पडेस्क / UPI:* ${contact}`;
       } else if (diffDays === 4) {
-        msg = `*ℹ️ ${libName} - सीट पुष्टि अनुरोध (Day 4)*
---------------------------------
-*विद्यार्थी का नाम:* ${student.name}
-*सीट नंबर:* ${seatInfo}
-*बकाया राशि:* ${formattedAmt}
-
-नमस्ते ${student.name} जी, आपकी मासिक फीस पिछले 4 दिनों से बकाया चल रही है। नए विद्यार्थियों के आग्रह के कारण कृपया हमें यह अवगत कराएं कि क्या आप इसी सीट (${seatInfo}) को आगे जारी रखना चाहते हैं? 
-
-कृपया आज संपर्क कर अपनी सीट सुनिश्चित करा लें।
-
-📞 *हेल्पडेस्क / UPI:* ${contact}`;
+        msg = `*ℹ️ ${libName} - सीट पुष्टि अनुरोध (Day 4)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*बकाया राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, आपकी मासिक फीस पिछले 4 दिनों से बकाया चल रही है। नए विद्यार्थियों के आग्रह के कारण कृपया हमें यह अवगत कराएं कि क्या आप इसी सीट (${seatInfo}) को आगे जारी रखना चाहते हैं? \n\nकृपया आज संपर्क कर अपनी सीट सुनिश्चित करा लें।\n\n📞 *हेल्पडेस्क / UPI:* ${contact}`;
       } else {
-        msg = `*📩 ${libName} - विशेष अनुरोध (Day 5)*
---------------------------------
-*विद्यार्थी का नाम:* ${student.name}
-*सीट नंबर:* ${seatInfo}
-*बकाया राशि:* ${formattedAmt}
-
-नमस्ते ${student.name} जी, आपकी लाइब्रेरी फीस 5 दिनों से लंबित है। सीट की निरंतरता बनाए रखने के लिए आपसे सविनय निवेदन है कि आज प्रबंधन से संपर्क कर अपनी स्थिति स्पष्ट करने की कृपा करें, ताकि हम आपकी सीट सुरक्षित रख सकें।
-
-📞 *हेल्पडेस्क / संपर्क:* ${contact}`;
+        msg = `*📩 ${libName} - विशेष अनुरोध (Day 5)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*बकाया राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, आपकी लाइब्रेरी फीस 5 दिनों से लंबित है। सीट की निरंतरता बनाए रखने के लिए आपसे सविनय निवेदन है कि आज प्रबंधन से संपर्क कर अपनी स्थिति स्पष्ट करने की कृपा करें, ताकि हम आपकी सीट सुरक्षित रख सकें।\n\n📞 *हेल्पडेस्क / संपर्क:* ${contact}`;
       }
 
-      // WhatsApp dispatch (Safe interval)
       await sendWhatsAppAlert(student.phone, msg);
       dispatchedCount++;
-      // Safe delay between messages
       await new Promise((r) => setTimeout(r, 2000));
     }
 
     return NextResponse.json({ success: true, count: dispatchedCount });
-  } catch (err: any) {
+  } catch (err) {
     return NextResponse.json({ success: false, error: err.message }, { status: 500 });
   }
 }
