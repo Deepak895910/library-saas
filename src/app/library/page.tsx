@@ -26,6 +26,19 @@ type Student = {
   balanceDue?: number;
 };
 
+type FeedbackItem = {
+  id: string;
+  library_id: string;
+  student_name: string;
+  phone: string;
+  seat_no?: string | null;
+  rating: number;
+  category: string;
+  message: string;
+  status: string;
+  created_at: string;
+};
+
 type Inquiry = {
   id: string;
   name: string;
@@ -72,7 +85,6 @@ type LibraryInfo = {
 const SUPER_ADMIN_WHATSAPP = "919301530783";
 const WA_SERVER_URL = "https://whatsapp-crm-service.onrender.com/api/send-message?secret=89599301";
 
-// Universal WhatsApp Alert & File Dispatcher (PDF / Image / Text)
 async function sendWhatsAppAlert(
   phone: string,
   message: string,
@@ -170,14 +182,13 @@ function getLocalDateString(d: Date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
-// Generates PDF, triggers browser save, and returns clean pure Base64
 function downloadReceiptPDF(
   libName: string,
   ownerName: string,
   ownerPhone: string,
   student: Student,
   amount: number,
-  months: number,
+  durationLabel: string,
   mode: string,
   paymentDateStr: string = getLocalDateString(),
   validUntilDateStr?: string
@@ -190,7 +201,7 @@ function downloadReceiptPDF(
     ? formatDate(validUntilDateStr)
     : (() => {
         const nextDue = new Date(paymentDateStr);
-        nextDue.setMonth(nextDue.getMonth() + months);
+        nextDue.setMonth(nextDue.getMonth() + 1);
         return nextDue.toLocaleDateString("en-IN", {
           day: "numeric",
           month: "short",
@@ -257,7 +268,7 @@ function downloadReceiptPDF(
 
   doc.setFont("helvetica", "normal");
   doc.text("Library Seat Fee Payment", 14, 104);
-  doc.text(`${months} Month(s)`, 80, 104);
+  doc.text(`${durationLabel}`, 80, 104);
   doc.setFont("helvetica", "bold");
   doc.text(`INR ${amount}`, 134, 104, { align: "right" });
 
@@ -291,7 +302,6 @@ function downloadReceiptPDF(
 
   doc.save(`${student.name.replace(/\s+/g, "_")}_Fee_Receipt.pdf`);
 
-  // Strip 'data:application/pdf;base64,' prefix completely
   const rawDataUri = doc.output("datauristring");
   return rawDataUri.split(",")[1];
 }
@@ -364,7 +374,7 @@ function LibraryView() {
   const searchParams = useSearchParams();
   const libId = searchParams.get("id");
 
-  const [activeTab, setActiveTab] = useState<"students" | "seats" | "inquiries" | "expenses">("students");
+  const [activeTab, setActiveTab] = useState<"students" | "seats" | "inquiries" | "expenses" | "feedbacks">("students");
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(true);
   const [currentLib, setCurrentLib] = useState<LibraryInfo | null>(null);
@@ -372,6 +382,7 @@ function LibraryView() {
   const [students, setStudents] = useState<Student[]>([]);
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [expenses, setExpenses] = useState<ExpenseRecord[]>([]);
+  const [feedbacks, setFeedbacks] = useState<FeedbackItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<Filter>("all");
   const [query, setQuery] = useState("");
@@ -402,12 +413,20 @@ function LibraryView() {
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [bulkProcessing, setBulkProcessing] = useState(false);
 
+  // Fee Collection & Custom Duration
   const [collectStudent, setCollectStudent] = useState<Student | null>(null);
+  const [durationMode, setDurationMode] = useState<"months" | "days">("months");
   const [collectMonths, setCollectMonths] = useState<number>(1);
+  const [customDaysCount, setCustomDaysCount] = useState<number>(15);
   const [customAmount, setCustomAmount] = useState<string>("");
   const [isFullSettlement, setIsFullSettlement] = useState<boolean>(false);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>("Cash");
   const [collectCustomDate, setCollectCustomDate] = useState<string>(getLocalDateString());
+
+  // Direct Date Extension
+  const [extendStudent, setExtendStudent] = useState<Student | null>(null);
+  const [extendDays, setExtendDays] = useState<number>(15);
+  const [extendingDate, setExtendingDate] = useState(false);
 
   const [historyStudent, setHistoryStudent] = useState<Student | null>(null);
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
@@ -525,6 +544,7 @@ function LibraryView() {
         showQrModal ||
         viewStudent ||
         collectStudent ||
+        extendStudent ||
         historyStudent
       ) {
         setShowModal(false);
@@ -536,6 +556,7 @@ function LibraryView() {
         setViewStudent(null);
         setEditingInquiryId(null);
         setCollectStudent(null);
+        setExtendStudent(null);
         setHistoryStudent(null);
         window.history.pushState({ isRoot: true }, "", window.location.href);
         return;
@@ -563,6 +584,7 @@ function LibraryView() {
     showQrModal,
     viewStudent,
     collectStudent,
+    extendStudent,
     historyStudent,
   ]);
 
@@ -585,6 +607,7 @@ function LibraryView() {
         setStudents(parsed.students || []);
         setInquiries(parsed.inquiries || []);
         setExpenses(parsed.expenses || []);
+        setFeedbacks(parsed.feedbacks || []);
         setLoading(false);
       } catch (e) {
         console.error("Cache read failed", e);
@@ -687,6 +710,15 @@ function LibraryView() {
       const finalExpenses = (expData as ExpenseRecord[]) || [];
       setExpenses(finalExpenses);
 
+      const { data: fbData } = await supabase
+        .from("library_feedbacks")
+        .select("*")
+        .eq("library_id", selected.id)
+        .order("created_at", { ascending: false });
+
+      const finalFeedbacks = (fbData as FeedbackItem[]) || [];
+      setFeedbacks(finalFeedbacks);
+
       localStorage.setItem(
         cacheKey,
         JSON.stringify({
@@ -694,6 +726,7 @@ function LibraryView() {
           students: formattedStudents,
           inquiries: finalInquiries,
           expenses: finalExpenses,
+          feedbacks: finalFeedbacks,
         })
       );
     } catch (err) {
@@ -867,52 +900,50 @@ function LibraryView() {
     window.setTimeout(() => setToast(null), 2400);
   }
 
-// ─── 5-DAY POLITE HINDI FEE REMINDER TEMPLATES ──────────────────────────
-function reminderText(student: Student) {
-  const contact = currentLib?.phone || "9301530783";
-  const seatInfo =
-    student.shift === "Random" || student.seatNo === "FLOATING"
-      ? "Floating Slot"
-      : student.seatNo;
+  function reminderText(student: Student) {
+    const contact = currentLib?.phone || "9301530783";
+    const seatInfo =
+      student.shift === "Random" || student.seatNo === "FLOATING"
+        ? "Floating Slot"
+        : student.seatNo;
 
-  const totalAmount =
-    (student.balanceDue || 0) > 0
-      ? student.balanceDue!
-      : student.monthlyFee * Math.max(1, student.pendingMonths);
-  const formattedAmt = `₹${totalAmount}`;
+    const totalAmount =
+      (student.balanceDue || 0) > 0
+        ? student.balanceDue!
+        : student.monthlyFee * Math.max(1, student.pendingMonths);
+    const formattedAmt = `₹${totalAmount}`;
 
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
 
-  let diffDays = 0;
-  if (student.dueDate && student.dueDate !== "-") {
-    let due = new Date(student.dueDate);
-    if (isNaN(due.getTime())) {
-      const monthsMap: Record<string, number> = {
-        jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
-        jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
-      };
-      const parts = student.dueDate.replace(/,/g, "").split(/\s+/);
-      if (parts.length >= 3) {
-        const day = parseInt(parts[0], 10);
-        const monthKey = parts[1].slice(0, 3).toLowerCase();
-        const year = parseInt(parts[2], 10);
-        if (!isNaN(day) && monthsMap[monthKey] !== undefined && !isNaN(year)) {
-          due = new Date(year, monthsMap[monthKey], day);
+    let diffDays = 0;
+    if (student.dueDate && student.dueDate !== "-") {
+      let due = new Date(student.dueDate);
+      if (isNaN(due.getTime())) {
+        const monthsMap: Record<string, number> = {
+          jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+          jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+        };
+        const parts = student.dueDate.replace(/,/g, "").split(/\s+/);
+        if (parts.length >= 3) {
+          const day = parseInt(parts[0], 10);
+          const monthKey = parts[1].slice(0, 3).toLowerCase();
+          const year = parseInt(parts[2], 10);
+          if (!isNaN(day) && monthsMap[monthKey] !== undefined && !isNaN(year)) {
+            due = new Date(year, monthsMap[monthKey], day);
+          }
         }
+      }
+
+      if (!isNaN(due.getTime())) {
+        due.setHours(0, 0, 0, 0);
+        const diffMs = today.getTime() - due.getTime();
+        diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
       }
     }
 
-    if (!isNaN(due.getTime())) {
-      due.setHours(0, 0, 0, 0);
-      const diffMs = today.getTime() - due.getTime();
-      diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
-    }
-  }
-
-  // Day 1: Due Date / First Day
-  if (diffDays <= 0) {
-    return `*📚 लाइब्रेरी फीस सूचना (Day 1)*
+    if (diffDays <= 0) {
+      return `*📚 लाइब्रेरी फीस सूचना (Day 1)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
@@ -922,11 +953,10 @@ function reminderText(student: Student) {
 नमस्ते ${student.name}, आपकी लाइब्रेरी की मासिक फीस का समय हो चुका है। कृपया अपनी पढ़ाई बिना किसी रुकावट के जारी रखने के लिए समय पर फीस जमा करें।
 
 📞 *हेल्पडेस्क / UPI:* ${contact}`;
-  }
+    }
 
-  // Day 2: 1 Day Overdue
-  if (diffDays === 1) {
-    return `*⏳ लाइब्रेरी फीस स्मरण (Day 2)*
+    if (diffDays === 1) {
+      return `*⏳ लाइब्रेरी फीस स्मरण (Day 2)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
@@ -935,11 +965,10 @@ function reminderText(student: Student) {
 नमस्ते ${student.name}, आपकी मासिक फीस कल देय थी जो अभी तक प्राप्त नहीं हुई है। असुविधा से बचने के लिए कृपया आज अपनी फीस जमा कराएं।
 
 📞 *हेल्पडेस्क / UPI:* ${contact}`;
-  }
+    }
 
-  // Day 3: 2-3 Days Overdue
-  if (diffDays === 2 || diffDays === 3) {
-    return `*⚠️ लाइब्रेरी फीस बकाया सूचना (Day 3)*
+    if (diffDays === 2 || diffDays === 3) {
+      return `*⚠️ लाइब्रेरी फीस बकाया सूचना (Day 3)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
@@ -950,11 +979,10 @@ function reminderText(student: Student) {
 यदि आप फीस जमा कर चुके हैं, तो कृपया रसीद साझा करें।
 
 📞 *हेल्पडेस्क / UPI:* ${contact}`;
-  }
+    }
 
-  // Day 4: 4 Days Overdue
-  if (diffDays === 4) {
-    return `*🚨 जरूरी सूचना: (Day 4)*
+    if (diffDays === 4) {
+      return `*🚨 जरूरी सूचना: (Day 4)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
@@ -965,10 +993,9 @@ function reminderText(student: Student) {
 कृपया आज संपर्क कर अपनी सीट सुनिश्चित करा लें।
 
 📞 *तुरंत संपर्क करें:* ${contact}`;
-  }
+    }
 
-  // Day 5+: 5 Days or more Overdue (Final Notice)
-  return `*❌ अंतिम नोटिस: (Day 5)*
+    return `*❌ अंतिम नोटिस: (Day 5)*
 --------------------------------
 *विद्यार्थी का नाम:* ${student.name}
 *सीट नंबर:* ${seatInfo}
@@ -978,12 +1005,12 @@ function reminderText(student: Student) {
 
 यदि आप अपनी सीट सुरक्षित रखना चाहते हैं, तो तुरंत संपर्क करें:
 📞 *एडमिन:* ${contact}`;
-}
+  }
 
-function openWhatsApp(student: Student) {
-  sendWhatsAppAlert(student.phone, reminderText(student));
-  showToast(`WhatsApp reminder sent to ${student.name}!`);
-}
+  function openWhatsApp(student: Student) {
+    sendWhatsAppAlert(student.phone, reminderText(student));
+    showToast(`WhatsApp reminder sent to ${student.name}!`);
+  }
 
   const handlePhoneChange = (enteredPhone: string) => {
     const cleanPhone = enteredPhone.replace(/\D/g, "").slice(-10);
@@ -1475,7 +1502,9 @@ function openWhatsApp(student: Student) {
   function handleOpenCollect(student: Student) {
     const defaultMonths = Math.max(1, student.pendingMonths);
     setCollectStudent(student);
+    setDurationMode("months");
     setCollectMonths(defaultMonths);
+    setCustomDaysCount(15);
     const defaultAmt =
       (student.balanceDue || 0) > 0 ? student.balanceDue! : student.monthlyFee * defaultMonths;
     setCustomAmount(String(defaultAmt));
@@ -1484,6 +1513,67 @@ function openWhatsApp(student: Student) {
 
     const isFirstTime = !student.lastPaidDate;
     setCollectCustomDate(isFirstTime && student.joiningDate ? student.joiningDate : getLocalDateString());
+  }
+
+  function handleOpenExtend(student: Student) {
+    setExtendStudent(student);
+    setExtendDays(15);
+  }
+
+  async function submitExtendValidity(e: React.FormEvent) {
+    e.preventDefault();
+    if (!checkOnlineStatus()) return;
+    if (!extendStudent || extendDays <= 0) return;
+
+    setExtendingDate(true);
+    try {
+      let baseDate: Date;
+      if (extendStudent.lastPaidDate) {
+        const lp = extendStudent.lastPaidDate.split("-").map(Number);
+        baseDate = new Date(lp[0], lp[1] - 1, lp[2] || 1);
+      } else if (extendStudent.joiningDate) {
+        const j = extendStudent.joiningDate.split("-").map(Number);
+        baseDate = new Date(j[0], j[1] - 1, j[2] || 1);
+      } else {
+        baseDate = new Date();
+      }
+
+      baseDate.setDate(baseDate.getDate() + Number(extendDays));
+      const newPaidUntilStr = getLocalDateString(baseDate);
+
+      const { dueDateText, status } = calculateMonthlyDue(extendStudent.joiningDate, newPaidUntilStr);
+
+      const { error } = await supabase
+        .from("students")
+        .update({
+          last_paid_date: newPaidUntilStr,
+          status: status === "Paid" ? "paid" : "due",
+        })
+        .eq("id", extendStudent.id);
+
+      if (error) throw error;
+
+      setStudents((prev) =>
+        prev.map((s) =>
+          s.id === extendStudent.id
+            ? {
+                ...s,
+                lastPaidDate: newPaidUntilStr,
+                dueDate: dueDateText,
+                status: status,
+                pendingMonths: status === "Paid" ? 0 : s.pendingMonths,
+              }
+            : s
+        )
+      );
+
+      showToast(`✓ ${extendStudent.name} ki validity +${extendDays} din badhakar ${dueDateText} kar di gayi!`);
+      setExtendStudent(null);
+    } catch (err: any) {
+      alert("Date extend karne me samasya: " + (err.message || "Unknown error"));
+    } finally {
+      setExtendingDate(false);
+    }
   }
 
   async function handleOpenHistory(student: Student) {
@@ -1555,14 +1645,24 @@ function openWhatsApp(student: Student) {
     }
   }
 
-  // ─── COLLECT FEE + AUTOMATIC CLEAN PDF ATTACHMENT SLIP TO WHATSAPP ─────────
   async function submitCollectFee(e: React.FormEvent) {
     e.preventDefault();
     if (!checkOnlineStatus()) return;
     if (!collectStudent || !currentLib?.id) return;
 
     const paymentDateUsed = collectCustomDate || getLocalDateString();
-    const currentTotalReq = collectStudent.monthlyFee * collectMonths;
+    let currentTotalReq = 0;
+    let durationLabel = "";
+
+    if (durationMode === "months") {
+      currentTotalReq = collectStudent.monthlyFee * collectMonths;
+      durationLabel = `${collectMonths} Month(s)`;
+    } else {
+      const perDayRate = collectStudent.monthlyFee / 30;
+      currentTotalReq = Math.round(perDayRate * customDaysCount);
+      durationLabel = `${customDaysCount} Days (Custom)`;
+    }
+
     const totalCollected = Number(customAmount) > 0 ? Number(customAmount) : currentTotalReq;
 
     const currentOldBalance = collectStudent.balanceDue || 0;
@@ -1583,15 +1683,21 @@ function openWhatsApp(student: Student) {
 
     let paidUntilStr = collectStudent.lastPaidDate;
     if (newBalanceDue === 0) {
-      const paidUntil = new Date(baseCycleDate.getFullYear(), baseCycleDate.getMonth() + collectMonths, 1);
-      const maxDays = new Date(paidUntil.getFullYear(), paidUntil.getMonth() + 1, 0).getDate();
-      paidUntil.setDate(Math.min(joinDay, maxDays));
-      paidUntilStr = getLocalDateString(paidUntil);
+      if (durationMode === "months") {
+        const paidUntil = new Date(baseCycleDate.getFullYear(), baseCycleDate.getMonth() + collectMonths, 1);
+        const maxDays = new Date(paidUntil.getFullYear(), paidUntil.getMonth() + 1, 0).getDate();
+        paidUntil.setDate(Math.min(joinDay, maxDays));
+        paidUntilStr = getLocalDateString(paidUntil);
+      } else {
+        const paidUntil = new Date(baseCycleDate.getTime());
+        paidUntil.setDate(paidUntil.getDate() + customDaysCount);
+        paidUntilStr = getLocalDateString(paidUntil);
+      }
     }
 
     const targetStudent = collectStudent;
     const chosenMode = paymentMode;
-    const countMonths = collectMonths;
+    const countMonths = durationMode === "months" ? collectMonths : 1;
 
     const { error: studentError } = await supabase
       .from("students")
@@ -1646,7 +1752,6 @@ function openWhatsApp(student: Student) {
 
     setCollectStudent(null);
 
-    // 1. Download Local PDF & Fetch pure Base64
     let generatedPdfBase64 = "";
     try {
       generatedPdfBase64 = downloadReceiptPDF(
@@ -1655,7 +1760,7 @@ function openWhatsApp(student: Student) {
         currentLib?.phone || "9301530783",
         targetStudent,
         totalCollected,
-        countMonths,
+        durationLabel,
         chosenMode,
         paymentDateUsed,
         paidUntilStr || undefined
@@ -1664,7 +1769,6 @@ function openWhatsApp(student: Student) {
       console.error("PDF generation error:", pdfErr);
     }
 
-    // 2. Direct PDF Document Delivery on WhatsApp
     const seatInfo =
       targetStudent.shift === "Random" || targetStudent.seatNo === "FLOATING"
         ? "Floating Slot"
@@ -1676,6 +1780,7 @@ function openWhatsApp(student: Student) {
 *विद्यार्थी का नाम:* ${targetStudent.name}
 *सीट नंबर:* ${seatInfo}
 *जमा की गई राशि:* ${formatINR(totalCollected)}
+*भुगतान अवधि:* ${durationLabel}
 *भुगतान तिथि:* ${formatDate(paymentDateUsed)}
 ${
   newBalanceDue > 0
@@ -2061,6 +2166,22 @@ ${
               }`}
             >
               <span>💰 Kharcha / Expenses</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("feedbacks")}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                activeTab === "feedbacks"
+                  ? "bg-white text-amber-600 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <span>💬 Feedbacks</span>
+              {feedbacks.length > 0 && (
+                <span className="text-[11px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-black">
+                  {feedbacks.length}
+                </span>
+              )}
             </button>
           </div>
 
@@ -2465,15 +2586,22 @@ ${
                         </div>
                       </div>
 
-                      <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between gap-1.5">
+                      <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between gap-1.5 flex-wrap">
                         {student.status !== "Left" && (
                           <>
                             <button
                               type="button"
                               onClick={() => handleOpenCollect(student)}
-                              className="flex-1 bg-indigo-600 text-white font-bold py-1.5 px-2 rounded-xl text-xs shadow-xs hover:bg-indigo-700 active:scale-95 text-center"
+                              className="flex-1 bg-indigo-600 text-white font-bold py-1.5 px-2 rounded-xl text-xs shadow-xs hover:bg-indigo-700 active:scale-95 text-center min-w-[90px]"
                             >
                               Collect Fee ₹
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleOpenExtend(student)}
+                              className="bg-purple-50 text-purple-700 border border-purple-200 font-bold py-1.5 px-2 rounded-xl text-xs hover:bg-purple-100 active:scale-95"
+                            >
+                              ⏳ Extend
                             </button>
                             <button
                               type="button"
@@ -2669,7 +2797,7 @@ ${
                             </span>
                           </td>
                           <td className="px-5 py-3.5 text-center">
-                            <div className="flex items-center justify-center gap-1.5">
+                            <div className="flex items-center justify-center gap-1.5 flex-wrap">
                               {student.status !== "Left" && (
                                 <>
                                   <button
@@ -2686,6 +2814,14 @@ ${
                                     className="rounded-lg bg-indigo-600 px-2.5 py-1 text-xs font-bold text-white hover:bg-indigo-700 transition shadow-xs"
                                   >
                                     Collect Fee ₹
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenExtend(student)}
+                                    title="Extend Expiry Date directly"
+                                    className="rounded-lg border border-purple-200 bg-purple-50 px-2 py-1 text-xs font-bold text-purple-700 hover:bg-purple-100 transition"
+                                  >
+                                    ⏳ Extend
                                   </button>
                                 </>
                               )}
@@ -2942,6 +3078,70 @@ ${
             </div>
           </section>
         )}
+
+        {/* TAB 5: FEEDBACKS VIEW */}
+        {activeTab === "feedbacks" && (
+          <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
+            <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-3 sm:items-center justify-between bg-slate-50/70">
+              <div>
+                <h3 className="font-extrabold text-slate-900">Student Feedbacks & Grievances</h3>
+                <p className="text-xs text-slate-500">Desk QR se students ke dwara bheje gaye sujhav aur complaints.</p>
+              </div>
+              <a
+                href={`https://quickchart.io/qr?text=${encodeURIComponent(
+                  `${typeof window !== "undefined" ? window.location.origin : ""}/feedback?lib_id=${currentLib?.id}`
+                )}&size=300`}
+                target="_blank"
+                rel="noreferrer"
+                className="bg-indigo-50 text-indigo-700 border border-indigo-200 text-xs font-bold px-3 py-1.5 rounded-xl shadow-xs hover:bg-indigo-100 transition self-start sm:self-auto"
+              >
+                🖨️ Feedback QR Nikalein
+              </a>
+            </div>
+
+            <div className="divide-y divide-slate-100 p-3 space-y-2">
+              {feedbacks.length === 0 ? (
+                <div className="p-8 text-center text-slate-400 text-xs">Abhi tak koi feedback prapt nahi hua hai.</div>
+              ) : (
+                feedbacks.map((fb) => (
+                  <div key={fb.id} className="p-3.5 rounded-2xl bg-white border border-slate-100 shadow-2xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-extrabold text-slate-900 text-sm">{fb.student_name}</span>
+                        {fb.seat_no && (
+                          <span className="font-mono text-xs font-bold bg-slate-100 px-2 py-0.5 rounded text-slate-700">
+                            Seat: #{fb.seat_no}
+                          </span>
+                        )}
+                        <span className="text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200 px-2 py-0.5 rounded-full">
+                          {fb.category}
+                        </span>
+                        <span className="text-xs">{"⭐".repeat(fb.rating || 5)}</span>
+                      </div>
+                      <p className="text-xs text-slate-700 bg-slate-50 p-2.5 rounded-xl border border-slate-200/60 font-medium">
+                        "{fb.message}"
+                      </p>
+                      <span className="text-[10px] text-slate-400 block">
+                        Phone: {fb.phone} · Date: {formatDate(fb.created_at)}
+                      </span>
+                    </div>
+
+                    <a
+                      href={`https://wa.me/91${fb.phone}?text=${encodeURIComponent(
+                        `Namaste ${fb.student_name}, aapka feedback ("${fb.category}") hume prapt hua hai. Hum is par turant dhyan de rahe hain.`
+                      )}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 text-xs font-bold px-3 py-2 rounded-xl transition shrink-0"
+                    >
+                      💬 WhatsApp Reply
+                    </a>
+                  </div>
+                ))
+              )}
+            </div>
+          </section>
+        )}
       </main>
 
       {/* Floating Bulk Toolbar */}
@@ -3042,11 +3242,13 @@ ${
 
         <button
           type="button"
-          onClick={() => setShowVacantModal(true)}
-          className="flex-1 flex flex-col items-center py-1 rounded-xl text-slate-500 active:scale-95 transition"
+          onClick={() => setActiveTab("feedbacks")}
+          className={`flex-1 flex flex-col items-center py-1 rounded-xl transition ${
+            activeTab === "feedbacks" ? "text-amber-600 bg-amber-50/60 font-bold" : "text-slate-500"
+          }`}
         >
-          <span className="text-lg leading-none">⚙️</span>
-          <span className="text-[10px] mt-1">Config</span>
+          <span className="text-lg leading-none">💬</span>
+          <span className="text-[10px] mt-1">Feedbacks</span>
         </button>
       </nav>
 
@@ -3539,7 +3741,7 @@ ${
         </div>
       )}
 
-      {/* Modal: Collect Fee */}
+      {/* Modal: Collect Fee (With Custom Days Subscription) */}
       {collectStudent && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
           <form onSubmit={submitCollectFee} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
@@ -3564,25 +3766,82 @@ ${
                 />
               </div>
 
+              {/* Plan Mode Selector: Months vs Custom Days */}
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1.5">Select Duration (Months):</label>
-                <select
-                  value={collectMonths}
-                  onChange={(e) => {
-                    const m = Number(e.target.value);
-                    setCollectMonths(m);
-                    const def = (collectStudent.balanceDue || 0) > 0 ? collectStudent.balanceDue! : collectStudent.monthlyFee * m;
-                    setCustomAmount(String(def));
-                  }}
-                  className="w-full rounded-xl border border-slate-200 p-2 text-xs font-bold bg-slate-50 text-slate-900"
-                >
-                  <option value={1}>1 Month (Current Cycle)</option>
-                  <option value={2}>2 Months (+2 Cycles)</option>
-                  <option value={3}>3 Months (+3 Cycles)</option>
-                  <option value={4}>4 Months (+4 Cycles)</option>
-                  <option value={6}>6 Months (Half Year)</option>
-                  <option value={12}>12 Months (Full Year)</option>
-                </select>
+                <label className="block text-xs font-bold text-slate-700 mb-1.5">Subscription Plan Type:</label>
+                <div className="grid grid-cols-2 gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDurationMode("months");
+                      const def = (collectStudent.balanceDue || 0) > 0 ? collectStudent.balanceDue! : collectStudent.monthlyFee * collectMonths;
+                      setCustomAmount(String(def));
+                    }}
+                    className={`py-1.5 text-xs font-bold rounded-xl border transition ${
+                      durationMode === "months"
+                        ? "bg-indigo-600 text-white border-indigo-600"
+                        : "bg-slate-50 text-slate-600 border-slate-200"
+                    }`}
+                  >
+                    📅 Standard (Months)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDurationMode("days");
+                      const perDay = collectStudent.monthlyFee / 30;
+                      const def = Math.round(perDay * customDaysCount);
+                      setCustomAmount(String(def));
+                    }}
+                    className={`py-1.5 text-xs font-bold rounded-xl border transition ${
+                      durationMode === "days"
+                        ? "bg-purple-600 text-white border-purple-600"
+                        : "bg-slate-50 text-slate-600 border-slate-200"
+                    }`}
+                  >
+                    ⚡ Custom Days
+                  </button>
+                </div>
+
+                {durationMode === "months" ? (
+                  <select
+                    value={collectMonths}
+                    onChange={(e) => {
+                      const m = Number(e.target.value);
+                      setCollectMonths(m);
+                      const def = (collectStudent.balanceDue || 0) > 0 ? collectStudent.balanceDue! : collectStudent.monthlyFee * m;
+                      setCustomAmount(String(def));
+                    }}
+                    className="w-full rounded-xl border border-slate-200 p-2 text-xs font-bold bg-slate-50 text-slate-900"
+                  >
+                    <option value={1}>1 Month (Current Cycle)</option>
+                    <option value={2}>2 Months (+2 Cycles)</option>
+                    <option value={3}>3 Months (+3 Cycles)</option>
+                    <option value={4}>4 Months (+4 Cycles)</option>
+                    <option value={6}>6 Months (Half Year)</option>
+                    <option value={12}>12 Months (Full Year)</option>
+                  </select>
+                ) : (
+                  <div>
+                    <input
+                      type="number"
+                      min={1}
+                      max={365}
+                      placeholder="e.g. 10, 15, 45 din"
+                      value={customDaysCount}
+                      onChange={(e) => {
+                        const d = Math.max(1, Number(e.target.value));
+                        setCustomDaysCount(d);
+                        const perDay = collectStudent.monthlyFee / 30;
+                        setCustomAmount(String(Math.round(perDay * d)));
+                      }}
+                      className="w-full rounded-xl border border-slate-200 p-2 text-xs font-bold bg-slate-50 text-slate-900 outline-none"
+                    />
+                    <span className="text-[10px] text-slate-400 mt-1 block">
+                      Per day rate (~₹{(collectStudent.monthlyFee / 30).toFixed(1)}/day) ke anusar calculation.
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -3602,7 +3861,9 @@ ${
                 <span className="text-[10px] text-slate-400 mt-1 block">
                   {(collectStudent.balanceDue || 0) > 0 
                     ? `Pending Balance Due: ${formatINR(collectStudent.balanceDue!)}`
-                    : `Standard Fee: ${formatINR(collectStudent.monthlyFee * collectMonths)} (${collectMonths} Month)`}
+                    : durationMode === "months"
+                      ? `Standard Fee: ${formatINR(collectStudent.monthlyFee * collectMonths)} (${collectMonths} Month)`
+                      : `Standard Rate: ${customDaysCount} Din ke liye`}
                 </span>
               </div>
 
@@ -3661,6 +3922,64 @@ ${
                 className="rounded-xl bg-emerald-600 px-5 py-2 text-xs font-bold text-white hover:bg-emerald-700 shadow-sm"
               >
                 Confirm & Mark Paid
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Modal: Direct Extend Expiry Date */}
+      {extendStudent && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
+          <form onSubmit={submitExtendValidity} className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Extend Seat Validity</h3>
+                <p className="text-xs text-slate-500">Student: <strong>{extendStudent.name}</strong></p>
+              </div>
+              <button type="button" onClick={() => setExtendStudent(null)} className="text-slate-400 hover:text-slate-600 font-bold text-xs">
+                ✕
+              </button>
+            </div>
+
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs space-y-1">
+              <div className="flex justify-between text-slate-600">
+                <span>Current Next Due / Valid Till:</span>
+                <span className="font-bold text-slate-900">{extendStudent.dueDate}</span>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">Kitne din extend karna chahte hain?</label>
+              <input
+                required
+                type="number"
+                min={1}
+                max={365}
+                value={extendDays}
+                onChange={(e) => setExtendDays(Number(e.target.value))}
+                placeholder="e.g. 5, 10, 15, 30 din"
+                className="w-full rounded-xl border border-slate-200 p-2.5 text-xs font-bold bg-white text-slate-900 outline-none focus:ring-2 focus:ring-purple-500/20"
+              />
+              <span className="text-[10px] text-slate-400 mt-1 block">
+                Yeh expiry date ko turant aage badha dega bina kisi extra payment record ke.
+              </span>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setExtendStudent(null)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={extendingDate}
+                className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-4 py-2 rounded-xl transition disabled:opacity-50"
+              >
+                {extendingDate ? "Extending..." : "Save & Extend Date"}
               </button>
             </div>
           </form>
@@ -3821,7 +4140,7 @@ ${
                               currentLib?.phone || "9301530783",
                               historyStudent,
                               item.amount_paid,
-                              item.months_count,
+                              `${item.months_count} Month(s)`,
                               item.payment_mode,
                               item.payment_date,
                               item.paid_until_date || undefined
