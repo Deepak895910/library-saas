@@ -374,7 +374,7 @@ function LibraryView() {
   const searchParams = useSearchParams();
   const libId = searchParams.get("id");
 
-  const [activeTab, setActiveTab] = useState<"students" | "seats" | "inquiries" | "expenses" | "feedbacks">("students");
+  const [activeTab, setActiveTab] = useState<"students" | "seats" | "inquiries" | "feedbacks">("students");
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(true);
   const [currentLib, setCurrentLib] = useState<LibraryInfo | null>(null);
@@ -391,6 +391,10 @@ function LibraryView() {
   const [toast, setToast] = useState<string | null>(null);
   const [formError, setFormError] = useState("");
   const [uploadingLogo, setUploadingLogo] = useState(false);
+
+  // Top Menu Dropdown State
+  const [showTopMenu, setShowTopMenu] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   const [showQrModal, setShowQrModal] = useState(false);
 
@@ -410,8 +414,24 @@ function LibraryView() {
   const [seatShiftView, setSeatShiftView] = useState<Shift | "All">("Morning");
   const [vacantShiftFilter, setVacantShiftFilter] = useState<Shift | "All">("All");
 
+  // Multi-select for students
   const [selectedStudentIds, setSelectedStudentIds] = useState<string[]>([]);
   const [bulkProcessing, setBulkProcessing] = useState(false);
+
+  // Student Broadcast (Auto API)
+  const [showStudentBroadcastModal, setShowStudentBroadcastModal] = useState(false);
+  const [studentBroadcastMsg, setStudentBroadcastMsg] = useState("");
+  const [broadcastingStudents, setBroadcastingStudents] = useState(false);
+  const [broadcastStudentProgress, setBroadcastStudentProgress] = useState({ current: 0, total: 0 });
+
+  // Inquiries / Leads Multi-select & Broadcast (Auto API)
+  const [selectedInquiryIds, setSelectedInquiryIds] = useState<string[]>([]);
+  const [showInquiryBroadcastModal, setShowInquiryBroadcastModal] = useState(false);
+  const [inquiryBroadcastMsg, setInquiryBroadcastMsg] = useState(
+    "Namaste! Hamari library me peaceful environment aur comfortable study seats available hain. Aaj hi visit karein aur trial slot book karein!"
+  );
+  const [broadcastingInquiries, setBroadcastingInquiries] = useState(false);
+  const [broadcastInquiryProgress, setBroadcastInquiryProgress] = useState({ current: 0, total: 0 });
 
   // Fee Collection & Custom Duration
   const [collectStudent, setCollectStudent] = useState<Student | null>(null);
@@ -432,6 +452,8 @@ function LibraryView() {
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
 
+  // Expenses Modal (Managed via Top-right menu)
+  const [showExpenseListModal, setShowExpenseListModal] = useState(false);
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [expenseForm, setExpenseForm] = useState({
     title: "",
@@ -448,10 +470,6 @@ function LibraryView() {
     shift: "Morning" as Shift,
     notes: "",
   });
-  const [showBroadcastModal, setShowBroadcastModal] = useState(false);
-  const [broadcastMessage, setBroadcastMessage] = useState(
-    "Namaste! Hamari library me special admission discount aur peaceful environment available hai. Aaj hi visit karein aur apni seat book karein!"
-  );
 
   const todayStr = getLocalDateString();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -464,6 +482,17 @@ function LibraryView() {
     monthlyFee: "600",
     joiningDate: todayStr,
   });
+
+  // Close three-dot menu on outside click
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setShowTopMenu(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -539,8 +568,10 @@ function LibraryView() {
         showModal ||
         showVacantModal ||
         showInquiryModal ||
-        showBroadcastModal ||
+        showStudentBroadcastModal ||
+        showInquiryBroadcastModal ||
         showExpenseModal ||
+        showExpenseListModal ||
         showQrModal ||
         viewStudent ||
         collectStudent ||
@@ -550,8 +581,10 @@ function LibraryView() {
         setShowModal(false);
         setShowVacantModal(false);
         setShowInquiryModal(false);
-        setShowBroadcastModal(false);
+        setShowStudentBroadcastModal(false);
+        setShowInquiryBroadcastModal(false);
         setShowExpenseModal(false);
+        setShowExpenseListModal(false);
         setShowQrModal(false);
         setViewStudent(null);
         setEditingInquiryId(null);
@@ -579,8 +612,10 @@ function LibraryView() {
     showModal,
     showVacantModal,
     showInquiryModal,
-    showBroadcastModal,
+    showStudentBroadcastModal,
+    showInquiryBroadcastModal,
     showExpenseModal,
+    showExpenseListModal,
     showQrModal,
     viewStudent,
     collectStudent,
@@ -897,7 +932,7 @@ function LibraryView() {
 
   function showToast(message: string) {
     setToast(message);
-    window.setTimeout(() => setToast(null), 2400);
+    window.setTimeout(() => setToast(null), 2500);
   }
 
   function reminderText(student: Student) {
@@ -1123,6 +1158,7 @@ function LibraryView() {
     const { error } = await supabase.from("inquiries").delete().eq("id", id);
     if (!error) {
       setInquiries((prev) => prev.filter((i) => i.id !== id));
+      setSelectedInquiryIds((prev) => prev.filter((item) => item !== id));
       showToast("Inquiry deleted.");
     }
   }
@@ -1140,14 +1176,64 @@ function LibraryView() {
     setActiveTab("students");
   }
 
-  function handleBulkWhatsAppInquiries() {
-    if (inquiries.length === 0) {
-      alert("Koi inquiry data available nahi hai!");
+  // Automated Inquiries Broadcast via Render API
+  async function handleSendInquiriesBroadcast() {
+    if (!inquiryBroadcastMsg.trim()) {
+      alert("Kripya broadcast message likhein!");
       return;
     }
-    const url = `https://api.whatsapp.com/send?text=${encodeURIComponent(broadcastMessage)}`;
-    window.open(url, "_blank");
-    setShowBroadcastModal(false);
+
+    const targets = inquiries.filter((i) => selectedInquiryIds.includes(i.id));
+    if (targets.length === 0) return;
+
+    setBroadcastingInquiries(true);
+    setBroadcastInquiryProgress({ current: 0, total: targets.length });
+
+    targets.forEach((lead, index) => {
+      setTimeout(() => {
+        sendWhatsAppAlert(lead.phone, inquiryBroadcastMsg);
+        setBroadcastInquiryProgress({ current: index + 1, total: targets.length });
+
+        if (index === targets.length - 1) {
+          setTimeout(() => {
+            setBroadcastingInquiries(false);
+            setShowInquiryBroadcastModal(false);
+            setSelectedInquiryIds([]);
+            showToast(`✓ ${targets.length} inquiries ko automated message bhej diya gaya!`);
+          }, 800);
+        }
+      }, index * 1500);
+    });
+  }
+
+  // Automated Students Broadcast via Render API
+  async function handleSendStudentBroadcast() {
+    if (!studentBroadcastMsg.trim()) {
+      alert("Kripya broadcast message likhein!");
+      return;
+    }
+
+    const targets = students.filter((s) => selectedStudentIds.includes(s.id));
+    if (targets.length === 0) return;
+
+    setBroadcastingStudents(true);
+    setBroadcastStudentProgress({ current: 0, total: targets.length });
+
+    targets.forEach((stu, index) => {
+      setTimeout(() => {
+        sendWhatsAppAlert(stu.phone, studentBroadcastMsg);
+        setBroadcastStudentProgress({ current: index + 1, total: targets.length });
+
+        if (index === targets.length - 1) {
+          setTimeout(() => {
+            setBroadcastingStudents(false);
+            setShowStudentBroadcastModal(false);
+            setSelectedStudentIds([]);
+            showToast(`✓ ${targets.length} students ko personal broadcast deliver ho gaya!`);
+          }, 800);
+        }
+      }, index * 1500);
+    });
   }
 
   async function handleAddExpense(e: React.FormEvent) {
@@ -1321,6 +1407,20 @@ function LibraryView() {
 
   function toggleSelectStudent(id: string) {
     setSelectedStudentIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  }
+
+  function toggleSelectAllInquiries() {
+    if (selectedInquiryIds.length === inquiries.length) {
+      setSelectedInquiryIds([]);
+    } else {
+      setSelectedInquiryIds(inquiries.map((i) => i.id));
+    }
+  }
+
+  function toggleSelectInquiry(id: string) {
+    setSelectedInquiryIds((prev) =>
       prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
     );
   }
@@ -1751,30 +1851,28 @@ function LibraryView() {
     );
 
     setCollectStudent(null);
+    showToast(`✓ Payment jama ho gayi! Receipt generate ho rahi hai...`);
 
-    let generatedPdfBase64 = "";
-    try {
-      generatedPdfBase64 = downloadReceiptPDF(
-        currentLib?.name || "LIBRARY MANAGEMENT",
-        currentLib?.owner_name || "Manager",
-        currentLib?.phone || "9301530783",
-        targetStudent,
-        totalCollected,
-        durationLabel,
-        chosenMode,
-        paymentDateUsed,
-        paidUntilStr || undefined
-      );
-    } catch (pdfErr) {
-      console.error("PDF generation error:", pdfErr);
-    }
+    setTimeout(() => {
+      try {
+        const generatedPdfBase64 = downloadReceiptPDF(
+          currentLib?.name || "LIBRARY MANAGEMENT",
+          currentLib?.owner_name || "Manager",
+          currentLib?.phone || "9301530783",
+          targetStudent,
+          totalCollected,
+          durationLabel,
+          chosenMode,
+          paymentDateUsed,
+          paidUntilStr || undefined
+        );
 
-    const seatInfo =
-      targetStudent.shift === "Random" || targetStudent.seatNo === "FLOATING"
-        ? "Floating Slot"
-        : `Seat #${targetStudent.seatNo}`;
+        const seatInfo =
+          targetStudent.shift === "Random" || targetStudent.seatNo === "FLOATING"
+            ? "Floating Slot"
+            : `Seat #${targetStudent.seatNo}`;
 
-    const receiptSlipCaption = `*🧾 लाइब्रेरी फीस भुगतान रसीद (Official Receipt)*
+        const receiptSlipCaption = `*🧾 लाइब्रेरी फीस भुगतान रसीद (Official Receipt)*
 --------------------------------
 *लाइब्रेरी:* ${currentLib?.name || "Library Management"}
 *विद्यार्थी का नाम:* ${targetStudent.name}
@@ -1793,11 +1891,12 @@ ${
 
 संपर्क: +91 ${currentLib?.phone || "9301530783"}`;
 
-    const pdfName = `${targetStudent.name.replace(/\s+/g, "_")}_Fee_Slip.pdf`;
-
-    sendWhatsAppAlert(targetStudent.phone, receiptSlipCaption, generatedPdfBase64, "pdf", pdfName);
-
-    showToast(`✓ Fees collect ho gayi aur WhatsApp slip PDF deliver ho gayi!`);
+        const pdfName = `${targetStudent.name.replace(/\s+/g, "_")}_Fee_Slip.pdf`;
+        sendWhatsAppAlert(targetStudent.phone, receiptSlipCaption, generatedPdfBase64, "pdf", pdfName);
+      } catch (pdfErr) {
+        console.error("PDF / WA dispatch error:", pdfErr);
+      }
+    }, 100);
   }
 
   async function handleSaveSeatConfiguration() {
@@ -2071,8 +2170,9 @@ ${
         </div>
       )}
 
-      <header className="sticky top-0 z-40 bg-white/85 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-3 sm:px-6 lg:px-8">
+      {/* HEADER: Cleaned up with Three-dot dropdown menu */}
+      <header className="sticky top-0 z-40 bg-white/90 backdrop-blur-md border-b border-slate-200/80 shadow-xs">
+        <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-2.5 sm:px-6 lg:px-8">
           
           <div className="flex items-center gap-3">
             <label
@@ -2085,7 +2185,7 @@ ${
                 onError={(e) => {
                   (e.target as any).src = "/logo.png";
                 }}
-                className="h-11 w-11 rounded-2xl object-cover border border-slate-200 shadow-sm transition duration-200 group-hover:scale-105 group-hover:ring-2 group-hover:ring-indigo-500"
+                className="h-10 w-10 sm:h-11 sm:w-11 rounded-2xl object-cover border border-slate-200 shadow-sm transition duration-200 group-hover:scale-105 group-hover:ring-2 group-hover:ring-indigo-500"
               />
               <div className="absolute inset-0 bg-black/40 rounded-2xl opacity-0 group-hover:opacity-100 flex items-center justify-center transition text-white text-[10px] font-bold">
                 ✏️
@@ -2102,20 +2202,21 @@ ${
 
             <div>
               <div className="flex items-center gap-2">
-                <p className="text-base sm:text-lg font-black tracking-tight text-slate-950 leading-tight">
+                <p className="text-sm sm:text-base md:text-lg font-black tracking-tight text-slate-950 leading-tight">
                   {currentLib?.name || "LIBRARY MANAGEMENT"}
                 </p>
                 <span className="hidden sm:inline-block text-[10px] font-extrabold bg-gradient-to-r from-indigo-500 to-purple-600 text-white px-2 py-0.5 rounded-full uppercase tracking-wider shadow-xs">
                   Pro App
                 </span>
               </div>
-              <p className="text-xs text-slate-500 font-medium">
+              <p className="text-[11px] text-slate-500 font-medium">
                 Head: {currentLib?.owner_name || "Manager"}
                 {uploadingLogo && <span className="ml-2 text-indigo-600 font-bold animate-pulse">(Updating Logo...)</span>}
               </p>
             </div>
           </div>
 
+          {/* Desktop Navigation Tabs */}
           <div className="hidden md:flex items-center gap-1.5 bg-slate-100/90 p-1.5 rounded-2xl border border-slate-200/60">
             <button
               type="button"
@@ -2158,17 +2259,6 @@ ${
             </button>
             <button
               type="button"
-              onClick={() => setActiveTab("expenses")}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                activeTab === "expenses"
-                  ? "bg-white text-rose-600 shadow-sm"
-                  : "text-slate-600 hover:text-slate-900"
-              }`}
-            >
-              <span>💰 Kharcha / Expenses</span>
-            </button>
-            <button
-              type="button"
               onClick={() => setActiveTab("feedbacks")}
               className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
                 activeTab === "feedbacks"
@@ -2185,52 +2275,124 @@ ${
             </button>
           </div>
 
+          {/* Header Action Buttons & Three-Dot Menu */}
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setShowQrModal(true)}
-              title="Student Self-Inquiry QR Code"
-              className="text-xs bg-white hover:bg-indigo-50 text-indigo-700 font-bold px-3 py-2 rounded-xl border border-indigo-200 shadow-xs transition flex items-center gap-1.5"
-            >
-              <span>📱 QR Form</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleExportCSV}
-              title="Download CSV / Excel"
-              className="text-xs bg-white hover:bg-slate-50 text-slate-700 font-bold px-3 py-2 rounded-xl border border-slate-200 shadow-xs transition"
-            >
-              📥 <span className="hidden sm:inline">Export</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleLogout}
-              title="Logout"
-              className="text-xs bg-white hover:bg-rose-50 hover:text-rose-600 text-slate-700 font-bold px-3 py-2 rounded-xl border border-slate-200 shadow-xs transition"
-            >
-              🚪 <span className="hidden sm:inline">Logout</span>
-            </button>
-            <button
-              type="button"
               onClick={() => handleOpenAdd("")}
-              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-3.5 py-2 text-xs sm:text-sm font-bold text-white shadow-sm shadow-indigo-500/25 transition hover:from-indigo-700 hover:to-violet-700 active:scale-95"
+              className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r from-indigo-600 to-violet-600 px-3.5 py-2 text-xs font-bold text-white shadow-sm shadow-indigo-500/25 transition hover:from-indigo-700 hover:to-violet-700 active:scale-95"
             >
               <span className="text-base leading-none">+</span>
-              <span>Add Student</span>
+              <span className="hidden sm:inline">Add Student</span>
+              <span className="sm:hidden">Add</span>
             </button>
+
+            {/* THREE-DOT MENU */}
+            <div className="relative" ref={menuRef}>
+              <button
+                type="button"
+                onClick={() => setShowTopMenu(!showTopMenu)}
+                className="w-9 h-9 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 flex items-center justify-center text-base font-black shadow-xs transition active:scale-95"
+                title="More Options"
+              >
+                ⋮
+              </button>
+
+              {showTopMenu && (
+                <div className="absolute right-0 mt-2 w-64 rounded-2xl bg-white p-2 shadow-2xl border border-slate-100 text-xs font-medium space-y-1 z-50 animate-in fade-in zoom-in-95">
+                  {/* Financial Stats in Menu */}
+                  <div className="p-2.5 rounded-xl bg-gradient-to-r from-purple-50 to-indigo-50 border border-purple-100 text-slate-800 space-y-1">
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase">Gross Collected:</span>
+                      <strong className="text-purple-700 font-black">{formatINR(monthRevenue)}</strong>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] text-slate-500 font-bold uppercase">Net Profit:</span>
+                      <strong className={`font-black ${netProfit >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
+                        {formatINR(netProfit)}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTopMenu(false);
+                      setShowExpenseListModal(true);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-slate-700 hover:bg-rose-50 hover:text-rose-700 rounded-xl transition text-left font-bold"
+                  >
+                    <span>💰</span>
+                    <span>Kharcha / Expenses ({expenses.length})</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTopMenu(false);
+                      setShowQrModal(true);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 rounded-xl transition text-left font-bold"
+                  >
+                    <span>📱</span>
+                    <span>Student Self-Inquiry QR</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTopMenu(false);
+                      handleExportCSV();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-slate-700 hover:bg-slate-50 rounded-xl transition text-left"
+                  >
+                    <span>📥</span>
+                    <span>Export Students (CSV)</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTopMenu(false);
+                      setShowVacantModal(true);
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-slate-700 hover:bg-slate-50 rounded-xl transition text-left"
+                  >
+                    <span>⚙️</span>
+                    <span>Configure Fixed Seats</span>
+                  </button>
+
+                  <div className="border-t border-slate-100 my-1"></div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowTopMenu(false);
+                      handleLogout();
+                    }}
+                    className="w-full flex items-center gap-2.5 px-3 py-2 text-rose-600 hover:bg-rose-50 rounded-xl transition text-left font-bold"
+                  >
+                    <span>🚪</span>
+                    <span>Logout Account</span>
+                  </button>
+                </div>
+              )}
+            </div>
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-        <section className="grid gap-3 sm:gap-4 grid-cols-2 lg:grid-cols-5 mb-6">
-          <article className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(79,70,229,0.08)]">
+      <main className="mx-auto max-w-7xl px-4 py-5 sm:px-6 lg:px-8">
+        
+        {/* TOP 3 SUMMARY CARDS ONLY (Gross and Net moved to menu) */}
+        <section className="grid gap-3 sm:gap-4 grid-cols-1 sm:grid-cols-3 mb-6">
+          <article className="rounded-2xl border border-indigo-100 bg-gradient-to-br from-indigo-50/70 via-white to-white p-4 shadow-[0_2px_12px_-4px_rgba(79,70,229,0.08)]">
             <div className="flex justify-between items-start">
               <p className="text-xs font-bold text-indigo-950 uppercase tracking-wide">Total Enrolled</p>
               <span className="p-2 rounded-xl bg-indigo-600 text-white text-xs shadow-sm">🎓</span>
             </div>
             <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-indigo-950">{activeStudents.length}</p>
-            <p className="mt-1.5 text-xs text-slate-600 font-medium">
+            <p className="mt-1 text-xs text-slate-600 font-medium">
               <span className="font-extrabold text-slate-900">{bookedSeatNumbers.length}</span> Fixed ·{" "}
               <span className="font-extrabold text-rose-600">{randomStudentsCount}</span> Floating/Hold
             </p>
@@ -2238,7 +2400,7 @@ ${
 
           <article
             onClick={() => setShowVacantModal(true)}
-            className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(160,185,129,0.08)] cursor-pointer hover:border-emerald-300 transition hover:-translate-y-0.5"
+            className="rounded-2xl border border-emerald-100 bg-gradient-to-br from-emerald-50/70 via-white to-white p-4 shadow-[0_2px_12px_-4px_rgba(160,185,129,0.08)] cursor-pointer hover:border-emerald-300 transition hover:-translate-y-0.5"
           >
             <div className="flex justify-between items-start">
               <p className="text-xs font-bold text-emerald-950 uppercase tracking-wide">Vacant Seats</p>
@@ -2249,10 +2411,10 @@ ${
             <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-emerald-900">
               {vacantSeatList.length}
             </p>
-            <p className="mt-1.5 text-xs text-emerald-700 font-semibold">Out of {allSeatNames.length} fixed seats</p>
+            <p className="mt-1 text-xs text-emerald-700 font-semibold">Out of {allSeatNames.length} fixed seats</p>
           </article>
 
-          <article className="rounded-2xl border border-amber-200/80 bg-gradient-to-br from-amber-50/80 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(245,158,11,0.1)]">
+          <article className="rounded-2xl border border-amber-200/80 bg-gradient-to-br from-amber-50/80 via-white to-white p-4 shadow-[0_2px_12px_-4px_rgba(245,158,11,0.1)]">
             <div className="flex justify-between items-start">
               <p className="text-xs font-bold text-amber-950 uppercase tracking-wide">Pending Fees</p>
               <span className="p-2 rounded-xl bg-amber-500 text-white text-xs shadow-sm">⚡</span>
@@ -2260,32 +2422,8 @@ ${
             <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-amber-700">
               {formatINR(dueTotalAmount)}
             </p>
-            <p className="mt-1.5 text-xs font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full w-max border border-rose-200">
+            <p className="mt-1 text-xs font-bold text-rose-600 bg-rose-50 px-2 py-0.5 rounded-full w-max border border-rose-200">
               {dueToday.length + overdue.length} Students Due
-            </p>
-          </article>
-
-          <article className="rounded-2xl border border-purple-100 bg-gradient-to-br from-purple-50/70 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(168,85,247,0.08)]">
-            <div className="flex justify-between items-start">
-              <p className="text-xs font-bold text-purple-950 uppercase tracking-wide">Gross Fee Collected</p>
-              <span className="p-2 rounded-xl bg-purple-600 text-white text-xs shadow-sm">₹</span>
-            </div>
-            <p className="mt-2 text-2xl sm:text-3xl font-black tracking-tight text-purple-950">{formatINR(monthRevenue)}</p>
-            <p className="mt-1.5 text-xs text-purple-700 font-bold bg-purple-50 px-2 py-0.5 rounded-full w-max border border-purple-200">
-              {paid.length} Paid Students
-            </p>
-          </article>
-
-          <article className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 via-white to-white p-4 sm:p-5 shadow-[0_2px_12px_-4px_rgba(16,185,129,0.1)]">
-            <div className="flex justify-between items-start">
-              <p className="text-xs font-bold text-emerald-950 uppercase tracking-wide">Net Profit</p>
-              <span className="p-2 rounded-xl bg-emerald-600 text-white text-xs shadow-sm">📈</span>
-            </div>
-            <p className={`mt-2 text-2xl sm:text-3xl font-black tracking-tight ${netProfit >= 0 ? "text-emerald-700" : "text-rose-700"}`}>
-              {formatINR(netProfit)}
-            </p>
-            <p className="mt-1.5 text-xs text-slate-500 font-medium">
-              Kharcha: <strong className="text-rose-600">{formatINR(totalExpensesAmount)}</strong>
             </p>
           </article>
         </section>
@@ -2871,7 +3009,7 @@ ${
           </section>
         )}
 
-        {/* TAB 3: INQUIRIES VIEW */}
+        {/* TAB 3: INQUIRIES VIEW (With Selection & Auto API Broadcast) */}
         {activeTab === "inquiries" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
             <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-3 sm:items-center justify-between bg-slate-50/70">
@@ -2882,19 +3020,12 @@ ${
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => setShowBroadcastModal(true)}
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-xs flex items-center gap-1.5 transition"
-                >
-                  <span>📢 Broadcast</span>
-                </button>
-                <button
-                  type="button"
                   onClick={() => {
                     setEditingInquiryId(null);
                     setInquiryForm({ name: "", phone: "", shift: "Morning", notes: "" });
                     setShowInquiryModal(true);
                   }}
-                  className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-xs transition"
+                  className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-xs transition"
                 >
                   + Add Inquiry
                 </button>
@@ -2905,6 +3036,15 @@ ${
               <table className="w-full text-left text-xs">
                 <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-100">
                   <tr>
+                    <th className="px-3 py-3 w-10 text-center">
+                      <input
+                        type="checkbox"
+                        checked={inquiries.length > 0 && selectedInquiryIds.length === inquiries.length}
+                        onChange={toggleSelectAllInquiries}
+                        className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 cursor-pointer"
+                        title="Select All Inquiries"
+                      />
+                    </th>
                     <th className="px-5 py-3 font-bold">Candidate Name</th>
                     <th className="px-5 py-3 font-bold">Phone & Contact</th>
                     <th className="px-5 py-3 font-bold">Interested Shift</th>
@@ -2917,92 +3057,103 @@ ${
                 <tbody className="divide-y divide-slate-100 font-medium">
                   {inquiries.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-5 py-12 text-center text-slate-400">
+                      <td colSpan={8} className="px-5 py-12 text-center text-slate-400">
                         Abhi tak koi inquiry entry nahi hai. "+ Add Inquiry" se jod sakte hain.
                       </td>
                     </tr>
                   ) : (
-                    inquiries.map((inq) => (
-                      <tr key={inq.id} className="hover:bg-slate-50/70 transition">
-                        <td className="px-5 py-3.5 font-bold text-slate-900">{inq.name}</td>
-                        <td className="px-5 py-3.5">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-slate-700 font-bold">{inq.phone}</span>
-                            <button
-                              type="button"
-                              onClick={() => handleCallInquiry(inq.id, inq.phone)}
-                              title="Call Candidate & Log Time"
-                              className="w-6 h-6 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-md flex items-center justify-center text-xs font-bold transition"
-                            >
-                              📞
-                            </button>
-                            <a
-                              href={`https://wa.me/91${inq.phone}?text=${encodeURIComponent(
-                                `Namaste ${inq.name}, thank you for contacting ${currentLib?.name || "our library"}. Would you like to schedule your trial slot today?`
-                              )}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              title="WhatsApp Chat"
-                              className="w-6 h-6 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-md flex items-center justify-center text-xs font-bold"
-                            >
-                              💬
-                            </a>
-                          </div>
-                          <div className="mt-1">
-                            {inq.last_called_at ? (
-                              <span className="text-[10px] text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-medium border border-indigo-100 inline-block">
-                                🕒 Called: {new Date(inq.last_called_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}, {new Date(inq.last_called_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                    inquiries.map((inq) => {
+                      const isSelected = selectedInquiryIds.includes(inq.id);
+                      return (
+                        <tr key={inq.id} className={`hover:bg-slate-50/70 transition ${isSelected ? "bg-purple-50/40" : ""}`}>
+                          <td className="px-3 py-3.5 text-center">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleSelectInquiry(inq.id)}
+                              className="w-4 h-4 rounded text-purple-600 focus:ring-purple-500 cursor-pointer"
+                            />
+                          </td>
+                          <td className="px-5 py-3.5 font-bold text-slate-900">{inq.name}</td>
+                          <td className="px-5 py-3.5">
+                            <div className="flex items-center gap-2">
+                              <span className="font-mono text-slate-700 font-bold">{inq.phone}</span>
+                              <button
+                                type="button"
+                                onClick={() => handleCallInquiry(inq.id, inq.phone)}
+                                title="Call Candidate & Log Time"
+                                className="w-6 h-6 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-md flex items-center justify-center text-xs font-bold transition"
+                              >
+                                📞
+                              </button>
+                              <a
+                                href={`https://wa.me/91${inq.phone}?text=${encodeURIComponent(
+                                  `Namaste ${inq.name}, thank you for contacting ${currentLib?.name || "our library"}. Would you like to schedule your trial slot today?`
+                                )}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                title="WhatsApp Chat"
+                                className="w-6 h-6 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-md flex items-center justify-center text-xs font-bold"
+                              >
+                                💬
+                              </a>
+                            </div>
+                            <div className="mt-1">
+                              {inq.last_called_at ? (
+                                <span className="text-[10px] text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded font-medium border border-indigo-100 inline-block">
+                                  🕒 Called: {new Date(inq.last_called_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}, {new Date(inq.last_called_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-slate-400 italic">Not called yet</span>
+                              )}
+                            </div>
+                          </td>
+                          <td className="px-5 py-3.5">
+                            <span className={`inline-flex rounded-md px-2.5 py-0.5 text-[10px] font-bold ${shiftBadge(inq.interested_shift)}`}>
+                              {inq.interested_shift}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5">
+                            {inq.interested_seat ? (
+                              <span className="inline-block bg-indigo-100 border border-indigo-300 text-indigo-900 font-mono font-black text-xs px-2.5 py-0.5 rounded-lg">
+                                #{inq.interested_seat}
                               </span>
                             ) : (
-                              <span className="text-[10px] text-slate-400 italic">Not called yet</span>
+                              <span className="text-slate-400 italic">Not selected</span>
                             )}
-                          </div>
-                        </td>
-                        <td className="px-5 py-3.5">
-                          <span className={`inline-flex rounded-md px-2.5 py-0.5 text-[10px] font-bold ${shiftBadge(inq.interested_shift)}`}>
-                            {inq.interested_shift}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5">
-                          {inq.interested_seat ? (
-                            <span className="inline-block bg-indigo-100 border border-indigo-300 text-indigo-900 font-mono font-black text-xs px-2.5 py-0.5 rounded-lg">
-                              #{inq.interested_seat}
-                            </span>
-                          ) : (
-                            <span className="text-slate-400 italic">Not selected</span>
-                          )}
-                        </td>
-                        <td className="px-5 py-3.5 text-slate-600">{inq.notes || "General Inquiry"}</td>
-                        <td className="px-5 py-3.5 text-slate-500">{formatDate(inq.created_at)}</td>
-                        <td className="px-5 py-3.5 text-center">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => handleConvertInquiryToStudent(inq)}
-                              className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-2.5 py-1 rounded-md shadow-xs transition"
-                            >
-                              Enroll 🎓
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEditInquiry(inq)}
-                              title="Edit Lead"
-                              className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition"
-                            >
-                              ✏️
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleDeleteInquiry(inq.id)}
-                              className="text-red-500 hover:text-red-700 font-bold px-2 py-1"
-                              title="Delete Lead"
-                            >
-                              ✕
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))
+                          </td>
+                          <td className="px-5 py-3.5 text-slate-600">{inq.notes || "General Inquiry"}</td>
+                          <td className="px-5 py-3.5 text-slate-500">{formatDate(inq.created_at)}</td>
+                          <td className="px-5 py-3.5 text-center">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleConvertInquiryToStudent(inq)}
+                                className="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-2.5 py-1 rounded-md shadow-xs transition"
+                              >
+                                Enroll 🎓
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleOpenEditInquiry(inq)}
+                                title="Edit Lead"
+                                className="rounded-lg border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-bold text-indigo-700 hover:bg-indigo-100 transition"
+                              >
+                                ✏️
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteInquiry(inq.id)}
+                                className="text-red-500 hover:text-red-700 font-bold px-2 py-1"
+                                title="Delete Lead"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -3010,76 +3161,7 @@ ${
           </section>
         )}
 
-        {/* TAB 4: EXPENSES VIEW */}
-        {activeTab === "expenses" && (
-          <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
-            <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-3 sm:items-center justify-between bg-slate-50/70">
-              <div>
-                <h3 className="font-extrabold text-slate-900">Monthly Expenses & Bills</h3>
-                <p className="text-xs text-slate-500">Rent, Bijli, Wi-Fi, Water aur repairs ka kharcha track karein.</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => setShowExpenseModal(true)}
-                  className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold px-3.5 py-1.5 rounded-xl shadow-xs flex items-center gap-1.5 transition active:scale-95"
-                >
-                  <span>+ Naya Kharcha Add Karein</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-50 text-[11px] uppercase tracking-wide text-slate-500 border-b border-slate-100">
-                  <tr>
-                    <th className="px-5 py-3 font-bold">Kharcha Detail</th>
-                    <th className="px-5 py-3 font-bold">Category</th>
-                    <th className="px-5 py-3 font-bold">Date</th>
-                    <th className="px-5 py-3 font-bold">Amount (₹)</th>
-                    <th className="px-5 py-3 font-bold text-center">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 font-medium">
-                  {expenses.length === 0 ? (
-                    <tr>
-                      <td colSpan={5} className="px-5 py-12 text-center text-slate-400">
-                        Is mahine koi kharcha add nahi hua hai.
-                      </td>
-                    </tr>
-                  ) : (
-                    expenses.map((exp) => (
-                      <tr key={exp.id} className="hover:bg-slate-50/70 transition">
-                        <td className="px-5 py-3.5 font-bold text-slate-900">{exp.title}</td>
-                        <td className="px-5 py-3.5">
-                          <span className="bg-slate-100 text-slate-700 border border-slate-200 px-2 py-0.5 rounded-md font-semibold text-[11px]">
-                            {exp.category}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 text-slate-500">{formatDate(exp.expense_date)}</td>
-                        <td className="px-5 py-3.5 font-black text-rose-700 text-sm">
-                          {formatINR(exp.amount)}
-                        </td>
-                        <td className="px-5 py-3.5 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleDeleteExpense(exp.id)}
-                            className="text-rose-500 hover:text-rose-700 font-bold px-2 py-1"
-                            title="Delete Expense"
-                          >
-                            🗑️ Delete
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        )}
-
-        {/* TAB 5: FEEDBACKS VIEW */}
+        {/* TAB 4: FEEDBACKS VIEW */}
         {activeTab === "feedbacks" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
             <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row gap-3 sm:items-center justify-between bg-slate-50/70">
@@ -3144,9 +3226,9 @@ ${
         )}
       </main>
 
-      {/* Floating Bulk Toolbar */}
+      {/* FLOATING BULK TOOLBAR: STUDENTS */}
       {selectedStudentIds.length > 0 && (
-        <aside aria-label="Bulk actions toolbar" className="fixed bottom-16 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl flex flex-wrap items-center gap-3 border border-slate-700 backdrop-blur-md animate-in fade-in slide-in-from-bottom-3 max-w-[90vw]">
+        <aside aria-label="Bulk actions toolbar" className="fixed bottom-16 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white px-5 py-3 rounded-2xl shadow-2xl flex flex-wrap items-center gap-2.5 border border-slate-700 backdrop-blur-md animate-in fade-in slide-in-from-bottom-3 max-w-[95vw]">
           <div className="flex items-center gap-2">
             <span className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-600 text-[11px] font-black">
               {selectedStudentIds.length}
@@ -3162,7 +3244,7 @@ ${
             onClick={handleBulkMarkPaid}
             className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1 shadow-sm disabled:opacity-50"
           >
-            <span>{bulkProcessing ? "..." : "⚡ Mark Paid & Send WA Slips"}</span>
+            <span>{bulkProcessing ? "..." : "⚡ Mark Paid & Send Slips"}</span>
           </button>
 
           <button
@@ -3170,7 +3252,21 @@ ${
             onClick={handleBulkWhatsAppReminders}
             className="bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1 shadow-sm"
           >
-            <span>💬 Bulk WA Reminders</span>
+            <span>💬 Reminders</span>
+          </button>
+
+          {/* CUSTOM BROADCAST VIA AUTO API */}
+          <button
+            type="button"
+            onClick={() => {
+              setStudentBroadcastMsg(
+                `Namaste! Library ki taraf se zaroori soochana:\n\n[Apna message yahan likhein]\n\nSampark: +91 ${currentLib?.phone || "9301530783"}`
+              );
+              setShowStudentBroadcastModal(true);
+            }}
+            className="bg-purple-600 hover:bg-purple-500 active:scale-95 text-white text-xs font-bold px-3 py-1.5 rounded-xl transition flex items-center gap-1 shadow-sm"
+          >
+            <span>📢 Auto API Broadcast</span>
           </button>
 
           {selectedStudentIds.length === 2 && (
@@ -3194,7 +3290,37 @@ ${
         </aside>
       )}
 
-      {/* Mobile Navigation */}
+      {/* FLOATING BULK TOOLBAR: INQUIRIES LEADS */}
+      {selectedInquiryIds.length > 0 && (
+        <aside aria-label="Bulk inquiry actions" className="fixed bottom-16 md:bottom-6 left-1/2 -translate-x-1/2 z-50 bg-purple-950 text-white px-5 py-3 rounded-2xl shadow-2xl flex flex-wrap items-center gap-3 border border-purple-800 backdrop-blur-md animate-in fade-in slide-in-from-bottom-3 max-w-[95vw]">
+          <div className="flex items-center gap-2">
+            <span className="flex h-6 w-6 items-center justify-center rounded-full bg-purple-600 text-[11px] font-black">
+              {selectedInquiryIds.length}
+            </span>
+            <span className="text-xs font-bold text-purple-200">Leads Selected</span>
+          </div>
+
+          <div className="h-4 w-px bg-purple-800 hidden sm:block" />
+
+          <button
+            type="button"
+            onClick={() => setShowInquiryBroadcastModal(true)}
+            className="bg-emerald-600 hover:bg-emerald-500 active:scale-95 text-white text-xs font-bold px-3.5 py-1.5 rounded-xl transition flex items-center gap-1.5 shadow-sm"
+          >
+            <span>📢 Broadcast to Selected (Auto API)</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSelectedInquiryIds([])}
+            className="text-xs text-purple-300 hover:text-white font-semibold transition ml-auto"
+          >
+            Clear
+          </button>
+        </aside>
+      )}
+
+      {/* Mobile Bottom Navigation */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-lg border-t border-slate-200 px-2 py-2 flex items-center justify-around shadow-lg">
         <button
           type="button"
@@ -3231,17 +3357,6 @@ ${
 
         <button
           type="button"
-          onClick={() => setActiveTab("expenses")}
-          className={`flex-1 flex flex-col items-center py-1 rounded-xl transition ${
-            activeTab === "expenses" ? "text-rose-600 bg-rose-50/60 font-bold" : "text-slate-500"
-          }`}
-        >
-          <span className="text-lg leading-none">💰</span>
-          <span className="text-[10px] mt-1">Kharcha</span>
-        </button>
-
-        <button
-          type="button"
           onClick={() => setActiveTab("feedbacks")}
           className={`flex-1 flex flex-col items-center py-1 rounded-xl transition ${
             activeTab === "feedbacks" ? "text-amber-600 bg-amber-50/60 font-bold" : "text-slate-500"
@@ -3251,6 +3366,233 @@ ${
           <span className="text-[10px] mt-1">Feedbacks</span>
         </button>
       </nav>
+
+      {/* Modal: Student Auto API Broadcast */}
+      {showStudentBroadcastModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Broadcast to Selected Students</h3>
+                <p className="text-xs text-slate-500">
+                  Kul <strong>{selectedStudentIds.length} students</strong> ko background me auto API se personal message jayega.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowStudentBroadcastModal(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Quick Template Chips */}
+            <div className="flex flex-wrap gap-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  setStudentBroadcastMsg(
+                    `Namaste! Library ki taraf se zaroori soochana:\n\nKal library ka samay subah 8:00 AM se shaam 8:00 PM tak rahega.\n\nSampark: +91 ${currentLib?.phone || "9301530783"}`
+                  )
+                }
+                className="text-[11px] bg-slate-100 hover:bg-slate-200 text-slate-700 px-2.5 py-1 rounded-lg font-bold"
+              >
+                📢 Timing Notice
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setStudentBroadcastMsg(
+                    `Namaste! Apex Study Library ke sabhi boys students zaroori updates ke liye official WhatsApp group join karein:\n\n🔗 Group Link: https://chat.whatsapp.com/BOYS_GROUP_LINK\n\nSampark: +91 ${currentLib?.phone || "9301530783"}`
+                  )
+                }
+                className="text-[11px] bg-blue-50 hover:bg-blue-100 text-blue-700 px-2.5 py-1 rounded-lg font-bold border border-blue-200"
+              >
+                👦 Boys Group Link
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setStudentBroadcastMsg(
+                    `Namaste! Apex Study Library ki sabhi girls students zaroori updates ke liye official WhatsApp group join karein:\n\n🔗 Group Link: https://chat.whatsapp.com/GIRLS_GROUP_LINK\n\nSampark: +91 ${currentLib?.phone || "9301530783"}`
+                  )
+                }
+                className="text-[11px] bg-rose-50 hover:bg-rose-100 text-rose-700 px-2.5 py-1 rounded-lg font-bold border border-rose-200"
+              >
+                👧 Girls Group Link
+              </button>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Message Content:</label>
+              <textarea
+                rows={5}
+                value={studentBroadcastMsg}
+                onChange={(e) => setStudentBroadcastMsg(e.target.value)}
+                placeholder="Yahan apna message ya group link likhein..."
+                className="w-full rounded-xl border border-slate-200 p-3 text-xs font-medium outline-none focus:ring-2 focus:ring-purple-500/20"
+              />
+            </div>
+
+            {broadcastingStudents && (
+              <div className="p-3 bg-purple-50 rounded-xl border border-purple-200 text-xs text-purple-900 font-bold flex items-center justify-between animate-pulse">
+                <span>Sending Broadcast Messages...</span>
+                <span>{broadcastStudentProgress.current} / {broadcastStudentProgress.total} Delivered</span>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowStudentBroadcastModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={broadcastingStudents}
+                onClick={handleSendStudentBroadcast}
+                className="bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center gap-1.5 transition disabled:opacity-50"
+              >
+                <span>{broadcastingStudents ? "Sending..." : "🚀 Auto API Send"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Leads / Inquiries Auto API Broadcast */}
+      {showInquiryBroadcastModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-2">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">Broadcast to Selected Inquiries</h3>
+                <p className="text-xs text-slate-500">
+                  Kul <strong>{selectedInquiryIds.length} candidate leads</strong> ko background me auto API se personal WhatsApp message deliver hoga.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowInquiryBroadcastModal(false)}
+                className="text-slate-400 hover:text-slate-600 font-bold text-xs"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-600 mb-1 block">Inquiry Offer / Message:</label>
+              <textarea
+                rows={5}
+                value={inquiryBroadcastMsg}
+                onChange={(e) => setInquiryBroadcastMsg(e.target.value)}
+                placeholder="Message for admission leads..."
+                className="w-full rounded-xl border border-slate-200 p-3 text-xs font-medium outline-none focus:ring-2 focus:ring-emerald-500/20"
+              />
+            </div>
+
+            {broadcastingInquiries && (
+              <div className="p-3 bg-emerald-50 rounded-xl border border-emerald-200 text-xs text-emerald-900 font-bold flex items-center justify-between animate-pulse">
+                <span>Sending Leads Messages...</span>
+                <span>{broadcastInquiryProgress.current} / {broadcastInquiryProgress.total} Delivered</span>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setShowInquiryBroadcastModal(false)}
+                className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-100 rounded-xl"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={broadcastingInquiries}
+                onClick={handleSendInquiriesBroadcast}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center gap-1.5 transition disabled:opacity-50"
+              >
+                <span>{broadcastingInquiries ? "Sending..." : "🚀 Auto API Send"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Full Expenses Manager (Opened via ⋮ menu) */}
+      {showExpenseListModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-2xl rounded-3xl bg-white p-5 sm:p-6 shadow-2xl space-y-4 max-h-[90vh] flex flex-col animate-in fade-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-black text-slate-900">Monthly Expenses & Bills</h3>
+                <p className="text-xs text-slate-500">
+                  Total Monthly Kharcha: <strong className="text-rose-600">{formatINR(totalExpensesAmount)}</strong>
+                </p>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowExpenseModal(true)}
+                  className="bg-rose-600 hover:bg-rose-700 text-white text-xs font-bold px-3 py-1.5 rounded-xl shadow-xs transition"
+                >
+                  + Add Kharcha
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowExpenseListModal(false)}
+                  className="text-slate-400 hover:text-slate-600 font-bold text-sm"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+
+            <div className="overflow-y-auto flex-1">
+              {expenses.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-10">Koi kharcha add nahi hua hai.</p>
+              ) : (
+                <div className="divide-y divide-slate-100 text-xs">
+                  {expenses.map((exp) => (
+                    <div key={exp.id} className="py-2.5 flex items-center justify-between">
+                      <div>
+                        <p className="font-bold text-slate-900">{exp.title}</p>
+                        <p className="text-[11px] text-slate-500">
+                          {exp.category} · {formatDate(exp.expense_date)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        <span className="font-black text-rose-600 text-sm">{formatINR(exp.amount)}</span>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteExpense(exp.id)}
+                          className="text-slate-400 hover:text-rose-600 font-bold"
+                          title="Delete expense"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowExpenseListModal(false)}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-4 py-2 rounded-xl text-xs transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modal: QR */}
       {showQrModal && (
@@ -3568,39 +3910,6 @@ ${
               </button>
             </div>
           </form>
-        </div>
-      )}
-
-      {/* Modal: Broadcast */}
-      {showBroadcastModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-xs">
-          <div className="w-full max-w-md rounded-2xl bg-white p-5 shadow-2xl space-y-4">
-            <h3 className="text-base font-bold text-slate-900">Broadcast WhatsApp Message</h3>
-            <p className="text-xs text-slate-500">
-              Yeh message aapke sabhi inquiries ({inquiries.length} candidates) ke liye WhatsApp compose karega.
-            </p>
-            <textarea
-              value={broadcastMessage}
-              onChange={(e) => setBroadcastMessage(e.target.value)}
-              className="w-full rounded-xl border border-slate-200 p-3 text-xs h-28 font-medium"
-            />
-            <div className="flex justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setShowBroadcastModal(false)}
-                className="px-4 py-2 text-xs font-bold text-slate-600"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleBulkWhatsAppInquiries}
-                className="bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold px-4 py-2 rounded-xl flex items-center gap-1.5"
-              >
-                <span>🚀 Send Broadcast</span>
-              </button>
-            </div>
-          </div>
         </div>
       )}
 
