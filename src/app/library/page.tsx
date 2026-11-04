@@ -21,6 +21,7 @@ type Student = {
   shift: Shift;
   monthlyFee: number;
   joiningDate: string;
+  billingCycleDay?: number;
   lastPaidDate: string | null;
   lastPaymentDate?: string | null;
   lastPaymentMode?: string | null;
@@ -807,6 +808,7 @@ function LibraryView() {
             shift: (item.shift || "Morning") as Shift,
             monthlyFee: Number(item.monthly_fee),
             joiningDate: joining,
+            billingCycleDay: Number(item.billing_cycle_day) || Number(joining.split("-")[2]) || 1,
             lastPaidDate: lastPaid,
             lastPaymentDate: lastPayment,
             lastPaymentMode: item.last_payment_mode || "Cash",
@@ -1657,8 +1659,9 @@ function LibraryView() {
 
         const jParts = (s.joiningDate || today).split("-").map(Number);
         const joinDay = jParts[2] || 1;
+        const cycleDay = Math.min(31, Math.max(1, Number(s.billingCycleDay) || joinDay));
 
-        let baseCycleDate: Date;
+        let baseCycleDate;
         if (s.lastPaidDate) {
           const lp = s.lastPaidDate.split("-").map(Number);
           baseCycleDate = new Date(lp[0], lp[1] - 1, lp[2] || joinDay);
@@ -1668,7 +1671,7 @@ function LibraryView() {
 
         const paidUntil = new Date(baseCycleDate.getFullYear(), baseCycleDate.getMonth() + 1, 1);
         const maxDays = new Date(paidUntil.getFullYear(), paidUntil.getMonth() + 1, 0).getDate();
-        paidUntil.setDate(Math.min(joinDay, maxDays));
+        paidUntil.setDate(Math.min(cycleDay, maxDays));
         const paidUntilStr = getLocalDateString(paidUntil);
 
         ledgerInserts.push({
@@ -1859,6 +1862,7 @@ function LibraryView() {
         .from("students")
         .update({
           last_paid_date: newPaidUntilStr,
+          billing_cycle_day: Number(newPaidUntilStr.split("-")[2]) || 1,
           due_date: dueDateText,
           status: status === "Paid" ? "paid" : "due",
           last_reminder_date: null,
@@ -1873,6 +1877,7 @@ function LibraryView() {
             ? {
                 ...s,
                 lastPaidDate: newPaidUntilStr,
+                billingCycleDay: Number(newPaidUntilStr.split("-")[2]) || 1,
                 dueDate: dueDateText,
                 status: status,
                 pendingMonths: status === "Paid" ? 0 : s.pendingMonths,
@@ -1990,8 +1995,9 @@ function LibraryView() {
 
     const jParts = (collectStudent.joiningDate || todayStr).split("-").map(Number);
     const joinDay = jParts[2] || 1;
+    const cycleDay = Math.min(31, Math.max(1, Number(collectStudent.billingCycleDay) || joinDay));
 
-    let baseCycleDate: Date;
+    let baseCycleDate;
     if (collectStudent.lastPaidDate) {
       const lp = collectStudent.lastPaidDate.split("-").map(Number);
       baseCycleDate = new Date(lp[0], lp[1] - 1, lp[2] || joinDay);
@@ -2004,7 +2010,7 @@ function LibraryView() {
       if (durationMode === "months") {
         const paidUntil = new Date(baseCycleDate.getFullYear(), baseCycleDate.getMonth() + collectMonths, 1);
         const maxDays = new Date(paidUntil.getFullYear(), paidUntil.getMonth() + 1, 0).getDate();
-        paidUntil.setDate(Math.min(joinDay, maxDays));
+        paidUntil.setDate(Math.min(cycleDay, maxDays));
         paidUntilStr = getLocalDateString(paidUntil);
       } else {
         const paidUntil = new Date(baseCycleDate.getTime());
@@ -2192,6 +2198,7 @@ ${
           shift: form.shift,
           monthly_fee: fee,
           joining_date: form.joiningDate,
+          billing_cycle_day: Number(form.joiningDate.split("-")[2]) || 1,
           due_date: dueDateText,
           last_paid_date: null,
           last_payment_date: null,
@@ -2214,6 +2221,7 @@ ${
                   ...s,
                   ...rePayload,
                   seatNo,
+                  billingCycleDay: Number(form.joiningDate.split("-")[2]) || 1,
                   lastPaidDate: null,
                   lastPaymentDate: null,
                   status: "Due Today",
@@ -2233,7 +2241,20 @@ ${
       if (editingId) {
         const curr = students.find((s) => s.id === editingId);
         const joining = form.joiningDate || curr?.joiningDate || todayStr;
-        const lastPaid = curr?.lastPaidDate || null;
+        const joiningDateChanged = Boolean(curr && joining !== curr.joiningDate);
+        let lastPaid = curr?.lastPaidDate || null;
+
+        // Joining date is the monthly billing-cycle anchor. When it changes,
+        // align the paid-through date to the new cycle day, clamping short months.
+        if (joiningDateChanged && lastPaid) {
+          const joiningDay = Number(joining.split("-")[2]) || 1;
+          const paidParts = lastPaid.split("-").map(Number);
+          const paidYear = paidParts[0];
+          const paidMonth = paidParts[1] - 1;
+          const lastDayOfPaidMonth = new Date(paidYear, paidMonth + 1, 0).getDate();
+          const adjustedDay = Math.min(joiningDay, lastDayOfPaidMonth);
+          lastPaid = `${paidYear}-${String(paidMonth + 1).padStart(2, "0")}-${String(adjustedDay).padStart(2, "0")}`;
+        }
         const { dueDateText, status, pendingMonths } = calculateMonthlyDue(joining, lastPaid, curr?.status);
 
         const editPayload: any = {
@@ -2246,6 +2267,10 @@ ${
           due_date: dueDateText,
           status: (curr?.balanceDue || 0) > 0 ? "due" : status === "Paid" ? "paid" : "due",
         };
+        if (joiningDateChanged) {
+          editPayload.last_paid_date = lastPaid;
+          editPayload.billing_cycle_day = Number(joining.split("-")[2]) || 1;
+        }
 
         const { error } = await supabase
           .from("students")
@@ -2265,6 +2290,10 @@ ${
                   shift: form.shift,
                   monthlyFee: fee,
                   joiningDate: joining,
+                  billingCycleDay: joiningDateChanged
+                    ? (Number(joining.split("-")[2]) || 1)
+                    : (curr?.billingCycleDay || Number(joining.split("-")[2]) || 1),
+                  lastPaidDate: lastPaid,
                   dueDate: dueDateText,
                   status: (curr?.balanceDue || 0) > 0 ? ("Due Today" as Status) : status,
                   pendingMonths: (curr?.balanceDue || 0) > 0 ? 1 : pendingMonths,
@@ -2273,7 +2302,9 @@ ${
           )
         );
 
-        showToast(`Seat change ho gayi! Payment record safe hai.`);
+        showToast(joiningDateChanged
+          ? "Joining Date update ho gayi! Ab monthly Due Date naye cycle day ke hisaab se chalegi."
+          : "Seat change ho gayi! Payment record safe hai.");
         setShowModal(false);
         return;
       }
@@ -2299,6 +2330,7 @@ ${
         shift: form.shift,
         monthly_fee: fee,
         joining_date: form.joiningDate,
+        billing_cycle_day: Number(form.joiningDate.split("-")[2]) || 1,
         due_date: dueDateText,
         last_paid_date: null,
         last_payment_date: null,
@@ -2321,6 +2353,7 @@ ${
             shift: added.shift as Shift,
             monthlyFee: Number(added.monthly_fee),
             joiningDate: form.joiningDate,
+            billingCycleDay: Number(form.joiningDate.split("-")[2]) || 1,
             lastPaidDate: null,
             lastPaymentDate: null,
             lastPaymentMode: "Cash",
