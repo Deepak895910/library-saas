@@ -4,9 +4,9 @@ import { supabase } from "@/lib/supabase";
 export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
-const WA_SERVER_URL = "https://whatsapp-crm-service.onrender.com/api/send-message?secret=89599301";
+// SPECIFIC TEST LIBRARY ID
+const TARGET_LIBRARY_ID = "5630e970-a4cd-4d55-8e4f-e907cdf12267";
 
-// Safely parse multiple date formats (YYYY-MM-DD, DD/MM/YYYY, "04 Nov 2026", ISO)
 function parseDueDate(dateVal: any): Date | null {
   if (!dateVal || dateVal === "-" || dateVal === "N/A") return null;
 
@@ -52,131 +52,115 @@ function parseDueDate(dateVal: any): Date | null {
   return null;
 }
 
-async function sendWhatsAppAlert(phone: any, message: string) {
-  try {
-    let clean = String(phone || "").replace(/\D/g, "").slice(-10);
-    if (clean.length === 10) clean = "91" + clean;
-    await fetch(WA_SERVER_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ phone: clean, message }),
-    });
-  } catch (err) {
-    console.error("WhatsApp dispatch error:", err);
-  }
-}
-
 export async function GET() {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const todayStr = today.toISOString().split("T")[0];
 
-    // Fetch active students (excluding students who left)
+    // 1. Fetch library details for confirmation
+    const { data: libData } = await (supabase as any)
+      .from("libraries")
+      .select("id, name, phone")
+      .eq("id", TARGET_LIBRARY_ID)
+      .single();
+
+    // 2. Fetch students belonging ONLY to this library
     const { data: students, error: studentErr } = await (supabase as any)
       .from("students")
       .select("*")
+      .eq("library_id", TARGET_LIBRARY_ID)
       .neq("status", "left");
 
     if (studentErr || !students) {
       return NextResponse.json({ success: false, error: studentErr?.message });
     }
 
-    // Fetch library details map
-    const { data: libraries } = await (supabase as any)
-      .from("libraries")
-      .select("id, name, phone");
-
-    const libraryMap = new Map();
-    if (libraries) {
-      libraries.forEach((lib: any) => {
-        libraryMap.set(String(lib.id), lib);
-      });
-    }
-
-    let dispatchedCount = 0;
-    const auditLogs: any[] = [];
+    const dryRunResults: any[] = [];
 
     for (const student of (students as any[])) {
-      // 1. Aaj reminder bhej chuke hain toh skip karein (Daily Lock)
-      if (student.last_reminder_date === todayStr) {
-        auditLogs.push({ name: student.name, lib: student.library_id, status: "Skipped: Already sent today" });
+      const balance = Number(student.balance_due || 0);
+
+      // Rule 1: Paid & No balance due
+      if (student.status === "paid" && balance <= 0) {
+        dryRunResults.push({
+          name: student.name,
+          phone: student.phone,
+          status: student.status,
+          dueDate: student.due_date,
+          action: "SKIPPED",
+          reason: "Status is PAID & Balance is 0"
+        });
         continue;
       }
 
-      // 2. Parse due date
+      // Rule 2: Already sent today
+      if (student.last_reminder_date === todayStr) {
+        dryRunResults.push({
+          name: student.name,
+          phone: student.phone,
+          status: student.status,
+          dueDate: student.due_date,
+          action: "SKIPPED",
+          reason: "Already received reminder today"
+        });
+        continue;
+      }
+
+      // Rule 3: Due date parsing
       const due = parseDueDate(student.due_date);
       if (!due) {
-        auditLogs.push({ name: student.name, lib: student.library_id, status: `Skipped: Invalid date (${student.due_date})` });
+        dryRunResults.push({
+          name: student.name,
+          phone: student.phone,
+          status: student.status,
+          dueDate: student.due_date,
+          action: "SKIPPED",
+          reason: "Invalid Date Format"
+        });
         continue;
       }
 
       const diffMs = today.getTime() - due.getTime();
       const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-      // 3. Agar due date aane wali hai / agle mahine ki hai (future date), toh skip karein
+      // Rule 4: Future date
       if (diffDays < 0) {
-        auditLogs.push({ name: student.name, lib: student.library_id, status: `Skipped: Future due date (diffDays=${diffDays})` });
+        dryRunResults.push({
+          name: student.name,
+          phone: student.phone,
+          status: student.status,
+          dueDate: student.due_date,
+          action: "SKIPPED",
+          reason: `Future Date (${Math.abs(diffDays)} days remaining)`
+        });
         continue;
       }
 
-      const libObj = student.library_id ? libraryMap.get(String(student.library_id)) : null;
-      const libName = libObj?.name || "लाइब्रेरी";
-      const contact = libObj?.phone || "9301530783";
-      const seatInfo = student.seat_no === "FLOATING" ? "Floating Slot" : (student.seat_no || "N/A");
-      
-      const balance = Number(student.balance_due || 0);
-      const amount = balance > 0 ? balance : (student.monthly_fee || 600);
-      const formattedAmt = `₹${amount}`;
-
-      let msg = "";
-      let reminderType = "";
-
-      if (diffDays === 0) {
-        reminderType = "Fee Reminder (Day 1)";
-        msg = `*📚 ${libName} - मासिक फीस स्मरण (Day 1)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*अंतिम तिथि:* ${student.due_date}\n*फीस राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, आशा है आपकी पढ़ाई अच्छी चल रही होगी। आपकी इस माह की लाइब्रेरी फीस का समय हो चुका है। कृपया समय मिलने पर अपनी फीस जमा कराएं ताकि आपकी सीट निर्बाध जारी रहे।\n\n📞 *हेल्पडेस्क / UPI:* ${contact}`;
-      } else if (diffDays === 1) {
-        reminderType = "Fee Reminder (Day 2)";
-        msg = `*⏳ ${libName} - फीस नवीनीकरण सूचना (Day 2)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*बकाया राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, एक विनम्र स्मरण कि आपकी लाइब्रेरी फीस कल देय थी। यदि आपने पहले ही भुगतान कर दिया है तो कृपया हमें सूचित करें, अन्यथा आज समय निकालकर फीस रिन्यू कराने का कष्ट करें।\n\n📞 *हेल्पडेस्क / UPI:* ${contact}`;
-      } else if (diffDays === 2 || diffDays === 3) {
-        reminderType = "Fee Reminder (Day 3)";
-        msg = `*📖 ${libName} - विनम्र स्मरण (Day 3)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*बकाया राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, आपकी लाइब्रेरी फीस पिछले कुछ दिनों से लंबित है। अध्ययन व्यवस्था और सीट प्रबंधन को सुचारु बनाए रखने हेतु कृपया आज अपनी फीस जमा कराकर सहयोग प्रदान करें।\n\n📞 *हेल्पडेस्क / UPI:* ${contact}`;
-      } else if (diffDays === 4) {
-        reminderType = "Fee Reminder (Day 4)";
-        msg = `*ℹ️ ${libName} - सीट पुष्टि अनुरोध (Day 4)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*बकाया राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, आपकी मासिक फीस पिछले 4 दिनों से बकाया चल रही है। नए विद्यार्थियों के आग्रह के कारण कृपया हमें यह अवगत कराएं कि क्या आप इसी सीट (${seatInfo}) को आगे जारी रखना चाहते हैं? \n\nकृपया आज संपर्क कर अपनी सीट सुनिश्चित करा लें।\n\n📞 *हेल्पडेस्क / UPI:* ${contact}`;
-      } else {
-        reminderType = "Fee Reminder (Day 5+)";
-        msg = `*📩 ${libName} - विशेष अनुरोध (Day 5)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*बकाया राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, आपकी लाइब्रेरी फीस 5 दिनों से लंबित है। सीट की निरंतरता बनाए रखने के लिए आपसे सविनय निवेदन है कि आज प्रबंधन से संपर्क कर अपनी स्थिति स्पष्ट करने की कृपा करें, ताकि हम आपकी सीट सुरक्षित रख सकें।\n\n📞 *हेल्पडेस्क / संपर्क:* ${contact}`;
-      }
-
-      await sendWhatsAppAlert(student.phone, msg);
-
-      // Lock reminder for today
-      await (supabase as any)
-        .from("students")
-        .update({ last_reminder_date: todayStr })
-        .eq("id", student.id);
-
-      // Log in message history table
-      await (supabase as any)
-        .from("whatsapp_message_logs")
-        .insert([
-          {
-            student_id: student.id,
-            student_name: student.name,
-            phone: student.phone,
-            message_type: reminderType,
-            message_body: msg,
-            status: "sent",
-          },
-        ]);
-
-      auditLogs.push({ name: student.name, lib: student.library_id, status: `Sent ${reminderType}` });
-      dispatchedCount++;
-      await new Promise((r) => setTimeout(r, 1000));
+      // Qualifies for reminder
+      dryRunResults.push({
+        name: student.name,
+        phone: student.phone,
+        seat: student.seat_no,
+        dueDate: student.due_date,
+        status: student.status,
+        balanceDue: balance > 0 ? balance : (student.monthly_fee || 600),
+        action: "WOULD_SEND_MESSAGE",
+        messageType: `Day ${diffDays + 1}`,
+        note: "DRY-RUN PREVIEW ONLY (No real message sent)"
+      });
     }
 
-    return NextResponse.json({ success: true, count: dispatchedCount, audit: auditLogs });
+    return NextResponse.json({
+      success: true,
+      mode: "DRY_RUN (ZERO MESSAGES SENT)",
+      libraryName: libData?.name || "Target Library",
+      libraryId: TARGET_LIBRARY_ID,
+      totalStudentsInLibrary: students.length,
+      wouldSendCount: dryRunResults.filter(r => r.action === "WOULD_SEND_MESSAGE").length,
+      results: dryRunResults
+    });
+
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err?.message || "Internal error" }, { status: 500 });
   }
