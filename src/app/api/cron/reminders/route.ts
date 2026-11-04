@@ -1,12 +1,12 @@
 ﻿import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
-// Vercel execution timeout ko extend karne ke liye
-export const maxDuration = 60; // 60 seconds (agar plan support kare)
+export const maxDuration = 60;
 export const dynamic = "force-dynamic";
 
 const WA_SERVER_URL = "https://whatsapp-crm-service.onrender.com/api/send-message?secret=89599301";
 
+// Safely parse multiple date formats (YYYY-MM-DD, DD/MM/YYYY, "04 Nov 2026", ISO)
 function parseDueDate(dateVal: any): Date | null {
   if (!dateVal || dateVal === "-" || dateVal === "N/A") return null;
 
@@ -72,7 +72,7 @@ export async function GET() {
     today.setHours(0, 0, 0, 0);
     const todayStr = today.toISOString().split("T")[0];
 
-    // Sabhi active students ko select karein
+    // Fetch active students (excluding students who left)
     const { data: students, error: studentErr } = await (supabase as any)
       .from("students")
       .select("*")
@@ -82,7 +82,7 @@ export async function GET() {
       return NextResponse.json({ success: false, error: studentErr?.message });
     }
 
-    // Sabhi libraries ka map banayein
+    // Fetch library details map
     const { data: libraries } = await (supabase as any)
       .from("libraries")
       .select("id, name, phone");
@@ -98,19 +98,13 @@ export async function GET() {
     const auditLogs: any[] = [];
 
     for (const student of (students as any[])) {
-      const balance = Number(student.balance_due || 0);
-      const isPaid = student.status === "paid" && balance === 0;
-
-      if (isPaid) {
-        auditLogs.push({ name: student.name, lib: student.library_id, status: "Skipped: Paid" });
-        continue;
-      }
-
+      // 1. Aaj reminder bhej chuke hain toh skip karein (Daily Lock)
       if (student.last_reminder_date === todayStr) {
         auditLogs.push({ name: student.name, lib: student.library_id, status: "Skipped: Already sent today" });
         continue;
       }
 
+      // 2. Parse due date
       const due = parseDueDate(student.due_date);
       if (!due) {
         auditLogs.push({ name: student.name, lib: student.library_id, status: `Skipped: Invalid date (${student.due_date})` });
@@ -120,8 +114,9 @@ export async function GET() {
       const diffMs = today.getTime() - due.getTime();
       const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
+      // 3. Agar due date aane wali hai / agle mahine ki hai (future date), toh skip karein
       if (diffDays < 0) {
-        auditLogs.push({ name: student.name, lib: student.library_id, status: `Skipped: Future due date (${diffDays})` });
+        auditLogs.push({ name: student.name, lib: student.library_id, status: `Skipped: Future due date (diffDays=${diffDays})` });
         continue;
       }
 
@@ -129,7 +124,9 @@ export async function GET() {
       const libName = libObj?.name || "लाइब्रेरी";
       const contact = libObj?.phone || "9301530783";
       const seatInfo = student.seat_no === "FLOATING" ? "Floating Slot" : (student.seat_no || "N/A");
-      const amount = balance > 0 ? balance : (student.monthly_fee || 0);
+      
+      const balance = Number(student.balance_due || 0);
+      const amount = balance > 0 ? balance : (student.monthly_fee || 600);
       const formattedAmt = `₹${amount}`;
 
       let msg = "";
@@ -154,11 +151,13 @@ export async function GET() {
 
       await sendWhatsAppAlert(student.phone, msg);
 
+      // Lock reminder for today
       await (supabase as any)
         .from("students")
         .update({ last_reminder_date: todayStr })
         .eq("id", student.id);
 
+      // Log in message history table
       await (supabase as any)
         .from("whatsapp_message_logs")
         .insert([
@@ -174,7 +173,6 @@ export async function GET() {
 
       auditLogs.push({ name: student.name, lib: student.library_id, status: `Sent ${reminderType}` });
       dispatchedCount++;
-      // Delay ko thoda kam kiya taaki timeout na ho
       await new Promise((r) => setTimeout(r, 1000));
     }
 
