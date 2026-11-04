@@ -9,6 +9,9 @@ type Shift = "Morning" | "Evening" | "Full Day" | "Random";
 type Status = "Paid" | "Due Today" | "Overdue" | "Left";
 type Filter = "all" | "due" | "overdue" | "paid" | "left" | "custom";
 type PaymentMode = "Cash" | "UPI/Online";
+type DashboardTab = "students" | "seats" | "inquiries" | "feedbacks" | "payments";
+type PaymentDatePreset = "today" | "yesterday" | "this_week" | "last_week" | "this_month" | "last_month" | "this_year" | "last_year" | "all_time" | "custom";
+type PaymentModeFilter = "all" | "cash" | "online";
 
 type Student = {
   id: string;
@@ -19,6 +22,7 @@ type Student = {
   monthlyFee: number;
   joiningDate: string;
   lastPaidDate: string | null;
+  lastPaymentDate?: string | null;
   lastPaymentMode?: string | null;
   dueDate: string;
   status: Status;
@@ -53,6 +57,10 @@ type Inquiry = {
 
 type PaymentRecord = {
   id: string;
+  library_id?: string;
+  student_id?: string;
+  student_name?: string | null;
+  seat_no?: string | null;
   amount_paid: number;
   months_count: number;
   payment_mode: string;
@@ -181,6 +189,59 @@ function getLocalDateString(d: Date = new Date()): string {
   const month = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
+}
+
+function getPaymentDateBounds(
+  preset: PaymentDatePreset,
+  customFrom: string,
+  customTo: string,
+  now: Date = new Date()
+): { from: string | null; to: string | null } {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dateString = (date: Date) => getLocalDateString(date);
+  const addDays = (date: Date, days: number) =>
+    new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
+
+  switch (preset) {
+    case "today":
+      return { from: dateString(today), to: dateString(today) };
+    case "yesterday": {
+      const yesterday = addDays(today, -1);
+      return { from: dateString(yesterday), to: dateString(yesterday) };
+    }
+    case "this_week": {
+      const monday = addDays(today, -((today.getDay() + 6) % 7));
+      return { from: dateString(monday), to: dateString(today) };
+    }
+    case "last_week": {
+      const thisMonday = addDays(today, -((today.getDay() + 6) % 7));
+      const lastMonday = addDays(thisMonday, -7);
+      return { from: dateString(lastMonday), to: dateString(addDays(thisMonday, -1)) };
+    }
+    case "this_month":
+      return { from: dateString(new Date(today.getFullYear(), today.getMonth(), 1)), to: dateString(today) };
+    case "last_month":
+      return {
+        from: dateString(new Date(today.getFullYear(), today.getMonth() - 1, 1)),
+        to: dateString(new Date(today.getFullYear(), today.getMonth(), 0)),
+      };
+    case "this_year":
+      return { from: dateString(new Date(today.getFullYear(), 0, 1)), to: dateString(today) };
+    case "last_year":
+      return {
+        from: dateString(new Date(today.getFullYear() - 1, 0, 1)),
+        to: dateString(new Date(today.getFullYear() - 1, 11, 31)),
+      };
+    case "custom":
+      return { from: customFrom || null, to: customTo || null };
+    case "all_time":
+    default:
+      return { from: null, to: null };
+  }
+}
+
+function isCashPayment(mode: string | null | undefined): boolean {
+  return (mode || "").trim().toLowerCase() === "cash";
 }
 
 function downloadReceiptPDF(
@@ -375,7 +436,7 @@ function LibraryView() {
   const searchParams = useSearchParams();
   const libId = searchParams.get("id");
 
-  const [activeTab, setActiveTab] = useState<"students" | "seats" | "inquiries" | "feedbacks">("students");
+  const [activeTab, setActiveTab] = useState<DashboardTab>("students");
   const [isAuthorized, setIsAuthorized] = useState<boolean | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(true);
   const [currentLib, setCurrentLib] = useState<LibraryInfo | null>(null);
@@ -452,6 +513,15 @@ function LibraryView() {
   const [historyStudent, setHistoryStudent] = useState<Student | null>(null);
   const [paymentHistory, setPaymentHistory] = useState<PaymentRecord[]>([]);
   const [loadingHistory, setLoadingHistory] = useState(false);
+
+  // Library-wide payment ledger tab
+  const [ledgerPayments, setLedgerPayments] = useState<PaymentRecord[]>([]);
+  const [loadingLedgerPayments, setLoadingLedgerPayments] = useState(false);
+  const [ledgerPaymentError, setLedgerPaymentError] = useState<string | null>(null);
+  const [paymentDatePreset, setPaymentDatePreset] = useState<PaymentDatePreset>("this_month");
+  const [paymentCustomFrom, setPaymentCustomFrom] = useState("");
+  const [paymentCustomTo, setPaymentCustomTo] = useState("");
+  const [paymentModeFilter, setPaymentModeFilter] = useState<PaymentModeFilter>("all");
 
   // Expenses Modal (Managed via Top-right menu)
   const [showExpenseListModal, setShowExpenseListModal] = useState(false);
@@ -725,6 +795,7 @@ function LibraryView() {
         formattedStudents = stuData.map((item: any) => {
           const joining = item.joining_date || item.due_date || todayStr;
           const lastPaid = item.last_paid_date || null;
+          const lastPayment = item.last_payment_date || null;
           const { dueDateText, status, pendingMonths } = calculateMonthlyDue(joining, lastPaid, item.status);
           const balance = Number(item.balance_due || 0);
 
@@ -737,6 +808,7 @@ function LibraryView() {
             monthlyFee: Number(item.monthly_fee),
             joiningDate: joining,
             lastPaidDate: lastPaid,
+            lastPaymentDate: lastPayment,
             lastPaymentMode: item.last_payment_mode || "Cash",
             dueDate: item.due_date || dueDateText,
             status: balance > 0 ? "Due Today" : status,
@@ -796,6 +868,122 @@ function LibraryView() {
       loadData();
     }
   }, [isAuthorized, libId]);
+
+  const paymentDateBounds = useMemo(
+    () => getPaymentDateBounds(paymentDatePreset, paymentCustomFrom, paymentCustomTo),
+    [paymentDatePreset, paymentCustomFrom, paymentCustomTo]
+  );
+
+  useEffect(() => {
+    if (activeTab !== "payments" || !currentLib?.id) return;
+
+    let cancelled = false;
+    async function loadLibraryPaymentLedger() {
+      setLoadingLedgerPayments(true);
+      setLedgerPaymentError(null);
+      try {
+        const pageSize = 1000;
+        let from = 0;
+        let allRows: PaymentRecord[] = [];
+        while (true) {
+          let request = supabase
+            .from("fee_payments")
+            .select("*")
+            .eq("library_id", currentLib!.id)
+            .order("payment_date", { ascending: false })
+            .order("created_at", { ascending: false })
+            .range(from, from + pageSize - 1);
+
+          if (paymentDateBounds.from) request = request.gte("payment_date", paymentDateBounds.from);
+          if (paymentDateBounds.to) request = request.lte("payment_date", paymentDateBounds.to);
+
+          const { data, error } = await request;
+          if (error) throw error;
+          const batch = (data || []) as PaymentRecord[];
+          allRows = allRows.concat(batch);
+          if (batch.length < pageSize) break;
+          from += pageSize;
+        }
+        if (!cancelled) setLedgerPayments(allRows);
+      } catch (error: any) {
+        if (!cancelled) {
+          setLedgerPayments([]);
+          setLedgerPaymentError(error?.message || "Payment history load nahi ho payi.");
+        }
+      } finally {
+        if (!cancelled) setLoadingLedgerPayments(false);
+      }
+    }
+
+    loadLibraryPaymentLedger();
+    return () => { cancelled = true; };
+  }, [activeTab, currentLib?.id, paymentDateBounds.from, paymentDateBounds.to]);
+
+  const visibleLedgerPayments = useMemo(() => {
+    return ledgerPayments.filter((payment) => {
+      if (paymentModeFilter === "cash") return isCashPayment(payment.payment_mode);
+      if (paymentModeFilter === "online") return !isCashPayment(payment.payment_mode);
+      return true;
+    });
+  }, [ledgerPayments, paymentModeFilter]);
+
+  const paymentCollectionTotals = useMemo(() => {
+    return visibleLedgerPayments.reduce(
+      (totals, payment) => {
+        const amount = Number(payment.amount_paid) || 0;
+        if (isCashPayment(payment.payment_mode)) totals.cash += amount;
+        else totals.online += amount;
+        totals.total += amount;
+        return totals;
+      },
+      { cash: 0, online: 0, total: 0 }
+    );
+  }, [visibleLedgerPayments]);
+
+  function handleExportPaymentHistoryCSV() {
+    if (visibleLedgerPayments.length === 0) {
+      alert("Export karne ke liye koi payment record nahi hai!");
+      return;
+    }
+    const csvCell = (value: unknown) => {
+      const text = String(value ?? "");
+      return `"${text.replace(/"/g, '""')}"`;
+    };
+    const headers = [
+      "Payment Date", "Student Name", "Seat Number", "Amount Paid",
+      "Payment Mode", "Months Count", "Paid Until Date",
+    ];
+    const rows = visibleLedgerPayments.map((payment) => [
+      payment.payment_date,
+      payment.student_name || students.find((s) => s.id === payment.student_id)?.name || "Unknown Student",
+      payment.seat_no || students.find((s) => s.id === payment.student_id)?.seatNo || "—",
+      Number(payment.amount_paid) || 0,
+      payment.payment_mode || "Unknown",
+      Number(payment.months_count) || 0,
+      payment.paid_until_date || "",
+    ]);
+    const totalRows = [
+      ["Cash Total", "", "", paymentCollectionTotals.cash, "", "", ""],
+      ["Online Total", "", "", paymentCollectionTotals.online, "", "", ""],
+      ["Grand Total", "", "", paymentCollectionTotals.total, "", "", ""],
+    ];
+    const csv = "\uFEFF" + [
+      headers.map(csvCell).join(","),
+      ...rows.map((row) => row.map(csvCell).join(",")),
+      "",
+      ...totalRows.map((row) => row.map(csvCell).join(",")),
+    ].join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${(currentLib?.name || "Library").replace(/[^a-z0-9-_]/gi, "_")}_Payment_History_${getLocalDateString()}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    showToast(`${visibleLedgerPayments.length} payment records CSV export ho gaye!`);
+  }
 
   async function handleLogoUpload(e: React.ChangeEvent<HTMLInputElement>) {
     if (!checkOnlineStatus()) return;
@@ -1464,8 +1652,8 @@ function LibraryView() {
       const updatedMap = new Map<string, Partial<Student>>();
 
       for (const s of studentsToUpdate) {
-        const isFirstPayment = !s.lastPaidDate;
-        const paymentDateUsed = isFirstPayment && s.joiningDate ? s.joiningDate : today;
+        // Payment date means the date money is actually received, not the joining date.
+        const paymentDateUsed = today;
 
         const jParts = (s.joiningDate || today).split("-").map(Number);
         const joinDay = jParts[2] || 1;
@@ -1500,6 +1688,7 @@ function LibraryView() {
         updatedMap.set(s.id, {
           status: status,
           lastPaidDate: paidUntilStr,
+          lastPaymentDate: paymentDateUsed,
           lastPaymentMode: "Cash",
           dueDate: dueDateText,
           balanceDue: 0,
@@ -1512,6 +1701,7 @@ function LibraryView() {
             status: "paid",
             balance_due: 0,
             last_paid_date: paidUntilStr,
+            last_payment_date: paymentDateUsed,
             due_date: dueDateText,
             last_payment_mode: "Cash",
             last_reminder_date: null,
@@ -1633,8 +1823,8 @@ function LibraryView() {
     setIsFullSettlement(false);
     setPaymentMode("Cash");
 
-    const isFirstTime = !student.lastPaidDate;
-    setCollectCustomDate(isFirstTime && student.joiningDate ? student.joiningDate : getLocalDateString());
+    // Default to today; the user can still select a different received date.
+    setCollectCustomDate(getLocalDateString());
   }
 
   function handleOpenExtend(student: Student) {
@@ -1734,6 +1924,7 @@ function LibraryView() {
         (a, b) => new Date(b.payment_date).getTime() - new Date(a.payment_date).getTime()
       );
       const latestValidDate = sorted.length > 0 ? sorted[0].paid_until_date : null;
+      const latestPaymentDate = sorted.length > 0 ? sorted[0].payment_date : null;
 
       const { dueDateText, status, pendingMonths } = calculateMonthlyDue(
         historyStudent.joiningDate,
@@ -1744,6 +1935,7 @@ function LibraryView() {
         .from("students")
         .update({
           last_paid_date: latestValidDate,
+          last_payment_date: latestPaymentDate,
           due_date: dueDateText,
           status: status === "Paid" ? "paid" : "due",
         })
@@ -1755,6 +1947,7 @@ function LibraryView() {
             ? {
                 ...s,
                 lastPaidDate: latestValidDate,
+                lastPaymentDate: latestPaymentDate,
                 dueDate: dueDateText,
                 status: status,
                 pendingMonths: pendingMonths,
@@ -1763,7 +1956,7 @@ function LibraryView() {
         )
       );
 
-      setHistoryStudent((prev) => (prev ? { ...prev, lastPaidDate: latestValidDate, status, dueDate: dueDateText } : null));
+      setHistoryStudent((prev) => (prev ? { ...prev, lastPaidDate: latestValidDate, lastPaymentDate: latestPaymentDate, status, dueDate: dueDateText } : null));
       showToast("Payment delete ho gayi aur student ka due status update ho gaya!");
     } catch (err: any) {
       alert("Delete failed: " + (err.message || "Unknown error"));
@@ -1833,6 +2026,7 @@ function LibraryView() {
         status: newBalanceDue > 0 ? "due" : "paid",
         balance_due: newBalanceDue,
         last_paid_date: paidUntilStr,
+        last_payment_date: paymentDateUsed,
         due_date: dueDateText,
         last_payment_mode: chosenMode,
         last_reminder_date: null,
@@ -1868,6 +2062,7 @@ function LibraryView() {
           ? {
               ...s,
               lastPaidDate: paidUntilStr,
+              lastPaymentDate: paymentDateUsed,
               lastPaymentMode: chosenMode,
               dueDate: dueDateText,
               status: newBalanceDue > 0 ? ("Due Today" as Status) : status,
@@ -1999,6 +2194,7 @@ ${
           joining_date: form.joiningDate,
           due_date: dueDateText,
           last_paid_date: null,
+          last_payment_date: null,
           status: "due",
           balance_due: 0,
           library_id: currentLib?.id,
@@ -2019,6 +2215,7 @@ ${
                   ...rePayload,
                   seatNo,
                   lastPaidDate: null,
+                  lastPaymentDate: null,
                   status: "Due Today",
                   pendingMonths: 1,
                   balanceDue: 0,
@@ -2104,6 +2301,7 @@ ${
         joining_date: form.joiningDate,
         due_date: dueDateText,
         last_paid_date: null,
+        last_payment_date: null,
         status: "due",
         balance_due: 0,
         library_id: currentLib?.id,
@@ -2124,6 +2322,7 @@ ${
             monthlyFee: Number(added.monthly_fee),
             joiningDate: form.joiningDate,
             lastPaidDate: null,
+            lastPaymentDate: null,
             lastPaymentMode: "Cash",
             dueDate: dueDateText,
             status: "Due Today",
@@ -2284,6 +2483,17 @@ ${
               <span className="text-[11px] bg-purple-50 text-purple-700 px-2 py-0.5 rounded-full font-extrabold">
                 {inquiries.length}
               </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("payments")}
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
+                activeTab === "payments"
+                  ? "bg-white text-emerald-600 shadow-sm"
+                  : "text-slate-600 hover:text-slate-900"
+              }`}
+            >
+              <span>💳 Payment History</span>
             </button>
             <button
               type="button"
@@ -2576,6 +2786,175 @@ ${
           </div>
         )}
 
+        {/* TAB: LIBRARY-WIDE PAYMENT HISTORY */}
+        {activeTab === "payments" && (
+          <section className="mb-8 space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-black text-slate-900">Payment History</h2>
+                <p className="text-xs text-slate-500 mt-0.5">Current library ke fee ledger ke sabhi transactions.</p>
+              </div>
+              <button
+                type="button"
+                onClick={handleExportPaymentHistoryCSV}
+                disabled={loadingLedgerPayments || visibleLedgerPayments.length === 0}
+                className="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed px-4 py-2.5 text-xs font-bold text-white shadow-sm transition"
+              >
+                <span>📥</span> Export CSV
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <article className="rounded-2xl border border-amber-200 bg-gradient-to-br from-amber-50 to-white p-4 shadow-sm">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-amber-800">Cash Collection</p>
+                <p className="mt-2 text-2xl font-black text-amber-900">{formatINR(paymentCollectionTotals.cash)}</p>
+              </article>
+              <article className="rounded-2xl border border-sky-200 bg-gradient-to-br from-sky-50 to-white p-4 shadow-sm">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-sky-800">Online Collection</p>
+                <p className="mt-2 text-2xl font-black text-sky-900">{formatINR(paymentCollectionTotals.online)}</p>
+              </article>
+              <article className="rounded-2xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-white p-4 shadow-sm">
+                <p className="text-[11px] font-bold uppercase tracking-wide text-emerald-800">Total Collection</p>
+                <p className="mt-2 text-2xl font-black text-emerald-900">{formatINR(paymentCollectionTotals.total)}</p>
+              </article>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 items-end">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1.5">Date Range</label>
+                  <select
+                    value={paymentDatePreset}
+                    onChange={(e) => setPaymentDatePreset(e.target.value as PaymentDatePreset)}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="today">Today</option>
+                    <option value="yesterday">Yesterday</option>
+                    <option value="this_week">This Week</option>
+                    <option value="last_week">Last Week</option>
+                    <option value="this_month">This Month</option>
+                    <option value="last_month">Last Month</option>
+                    <option value="this_year">This Year</option>
+                    <option value="last_year">Last Year</option>
+                    <option value="all_time">All Time</option>
+                    <option value="custom">Custom Date Range</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-500 mb-1.5">Payment Mode</label>
+                  <select
+                    value={paymentModeFilter}
+                    onChange={(e) => setPaymentModeFilter(e.target.value as PaymentModeFilter)}
+                    className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  >
+                    <option value="all">All Modes</option>
+                    <option value="cash">Cash</option>
+                    <option value="online">Online</option>
+                  </select>
+                </div>
+                {paymentDatePreset === "custom" && (
+                  <>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1.5">From Date</label>
+                      <input
+                        type="date"
+                        value={paymentCustomFrom}
+                        max={paymentCustomTo || undefined}
+                        onChange={(e) => setPaymentCustomFrom(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-500 mb-1.5">To Date</label>
+                      <input
+                        type="date"
+                        value={paymentCustomTo}
+                        min={paymentCustomFrom || undefined}
+                        onChange={(e) => setPaymentCustomTo(e.target.value)}
+                        className="w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-semibold"
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+              {paymentDatePreset === "custom" && paymentCustomFrom && paymentCustomTo && paymentCustomFrom > paymentCustomTo && (
+                <p className="mt-2 text-xs font-semibold text-rose-600">From Date, To Date se aage nahi ho sakti.</p>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-4 border-b border-slate-100">
+                <div>
+                  <h3 className="font-extrabold text-slate-900">All Fee Transactions</h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">{visibleLedgerPayments.length} matching payment(s)</p>
+                </div>
+                <span className="text-[11px] font-bold text-slate-500">Newest payment first</span>
+              </div>
+              {loadingLedgerPayments ? (
+                <div className="p-10 text-center text-sm text-slate-500">
+                  <span className="inline-block animate-spin mr-2">⏳</span> Loading payment history...
+                </div>
+              ) : ledgerPaymentError ? (
+                <div className="p-8 text-center">
+                  <p className="text-sm font-bold text-rose-700">Payment history load nahi ho payi.</p>
+                  <p className="text-xs text-rose-600 mt-1 break-words">{ledgerPaymentError}</p>
+                </div>
+              ) : visibleLedgerPayments.length === 0 ? (
+                <div className="p-10 text-center">
+                  <p className="text-2xl mb-2">🧾</p>
+                  <p className="text-sm font-bold text-slate-700">No payment records found</p>
+                  <p className="text-xs text-slate-500 mt-1">Selected date range aur payment mode me koi transaction nahi hai.</p>
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[900px] text-left text-xs">
+                    <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500 border-b border-slate-100">
+                      <tr>
+                        <th className="px-4 py-3">Payment Date</th>
+                        <th className="px-4 py-3">Student Name</th>
+                        <th className="px-4 py-3">Seat No.</th>
+                        <th className="px-4 py-3 text-right">Amount Paid</th>
+                        <th className="px-4 py-3">Payment Mode</th>
+                        <th className="px-4 py-3 text-center">Months</th>
+                        <th className="px-4 py-3">Paid Until</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {visibleLedgerPayments.map((payment) => {
+                        const linkedStudent = students.find((student) => student.id === payment.student_id);
+                        return (
+                          <tr key={payment.id} className="hover:bg-slate-50/70">
+                            <td className="px-4 py-3 whitespace-nowrap font-semibold text-slate-700">{formatDate(payment.payment_date)}</td>
+                            <td className="px-4 py-3 font-bold text-slate-900">{payment.student_name || linkedStudent?.name || "Unknown Student"}</td>
+                            <td className="px-4 py-3 font-mono font-bold text-slate-600">{payment.seat_no || linkedStudent?.seatNo || "—"}</td>
+                            <td className="px-4 py-3 text-right font-black text-slate-900">{formatINR(Number(payment.amount_paid) || 0)}</td>
+                            <td className="px-4 py-3">
+                              <span className={`inline-flex rounded-lg px-2 py-1 text-[10px] font-bold border ${
+                                isCashPayment(payment.payment_mode)
+                                  ? "bg-amber-50 border-amber-200 text-amber-800"
+                                  : "bg-sky-50 border-sky-200 text-sky-800"
+                              }`}>{payment.payment_mode || "Unknown"}</span>
+                            </td>
+                            <td className="px-4 py-3 text-center font-semibold text-slate-600">{payment.months_count ?? "—"}</td>
+                            <td className="px-4 py-3 whitespace-nowrap text-slate-600">{formatDate(payment.paid_until_date)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                    <tfoot className="bg-slate-50 border-t border-slate-200">
+                      <tr>
+                        <td colSpan={3} className="px-4 py-3 text-right font-bold text-slate-600">Filtered Total</td>
+                        <td className="px-4 py-3 text-right font-black text-emerald-700">{formatINR(paymentCollectionTotals.total)}</td>
+                        <td colSpan={3} />
+                      </tr>
+                    </tfoot>
+                  </table>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         {/* TAB 2: STUDENTS VIEW */}
         {activeTab === "students" && (
           <section className="rounded-2xl border border-slate-200/80 bg-white shadow-sm overflow-hidden mb-8">
@@ -2857,6 +3236,7 @@ ${
                     <th className="px-5 py-3.5 font-bold">Shift</th>
                     <th className="px-5 py-3.5 font-bold">Monthly Fee</th>
                     <th className="px-5 py-3.5 font-bold">Joining Date</th>
+                    <th className="px-5 py-3.5 font-bold">Last Payment Date</th>
                     <th className="px-5 py-3.5 font-bold">Valid Until (Next Due)</th>
                     <th className="px-5 py-3.5 font-bold">Pending Dues</th>
                     <th className="px-5 py-3.5 font-bold">Status</th>
@@ -2866,11 +3246,11 @@ ${
                 <tbody className="divide-y divide-slate-100 font-medium">
                   {loading && students.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="px-5 py-10 text-center text-slate-400">Loading data...</td>
+                      <td colSpan={12} className="px-5 py-10 text-center text-slate-400">Loading data...</td>
                     </tr>
                   ) : filtered.length === 0 ? (
                     <tr>
-                      <td colSpan={11} className="px-5 py-10 text-center text-slate-500">Koi student nahi mila.</td>
+                      <td colSpan={12} className="px-5 py-10 text-center text-slate-500">Koi student nahi mila.</td>
                     </tr>
                   ) : (
                     filtered.map((student) => {
@@ -2933,6 +3313,7 @@ ${
                           </td>
                           <td className="px-5 py-3.5 font-extrabold text-slate-900">{formatINR(student.monthlyFee)}</td>
                           <td className="px-5 py-3.5 text-slate-500">{formatDate(student.joiningDate)}</td>
+                          <td className="px-5 py-3.5 text-slate-600">{student.lastPaymentDate ? formatDate(student.lastPaymentDate) : "Never / New"}</td>
                           <td className="px-5 py-3.5">
                             {student.lastPaidDate ? (
                               <div>
@@ -3406,6 +3787,17 @@ ${
 
         <button
           type="button"
+          onClick={() => setActiveTab("payments")}
+          className={`flex-1 flex flex-col items-center py-1 rounded-xl transition ${
+            activeTab === "payments" ? "text-emerald-600 bg-emerald-50/60 font-bold" : "text-slate-500"
+          }`}
+        >
+          <span className="text-lg leading-none">💳</span>
+          <span className="text-[10px] mt-1">Payments</span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveTab("feedbacks")}
           className={`flex-1 flex flex-col items-center py-1 rounded-xl transition ${
             activeTab === "feedbacks" ? "text-amber-600 bg-amber-50/60 font-bold" : "text-slate-500"
@@ -3752,13 +4144,17 @@ ${
                   <span className="font-bold text-slate-900">{formatDate(viewStudent.joiningDate)}</span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Last Fee Paid Date:</span>
+                  <span className="text-slate-500">Last Payment Received:</span>
                   <span className="font-bold text-slate-900">
-                    {viewStudent.lastPaidDate ? formatDate(viewStudent.lastPaidDate) : "Never (New)"}
+                    {viewStudent.lastPaymentDate ? formatDate(viewStudent.lastPaymentDate) : "Never (New)"}
                   </span>
                 </div>
                 <div className="flex justify-between">
-                  <span className="text-slate-500">Valid Till / Next Due:</span>
+                  <span className="text-slate-500">Paid Validity Until:</span>
+                  <span className="font-bold text-emerald-800">{viewStudent.lastPaidDate ? formatDate(viewStudent.lastPaidDate) : "-"}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Next Due Date:</span>
                   <span className="font-bold text-emerald-800">{viewStudent.dueDate}</span>
                 </div>
                 <div className="flex justify-between border-t border-indigo-100 pt-1.5">
