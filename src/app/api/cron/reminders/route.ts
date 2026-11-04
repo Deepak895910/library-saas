@@ -1,20 +1,21 @@
 ﻿import { NextResponse } from "next/server";
 import { supabase } from "@/lib/supabase";
 
+// Vercel execution timeout ko extend karne ke liye
+export const maxDuration = 60; // 60 seconds (agar plan support kare)
+export const dynamic = "force-dynamic";
+
 const WA_SERVER_URL = "https://whatsapp-crm-service.onrender.com/api/send-message?secret=89599301";
 
-// Helper function to safely parse multiple date formats
 function parseDueDate(dateVal: any): Date | null {
   if (!dateVal || dateVal === "-" || dateVal === "N/A") return null;
 
-  // Direct Date parse attempt (handles YYYY-MM-DD, ISO, standard formats)
   let parsed = new Date(dateVal);
   if (!isNaN(parsed.getTime())) {
     parsed.setHours(0, 0, 0, 0);
     return parsed;
   }
 
-  // Handle custom format e.g., "04 Nov 2026"
   const monthsMap: Record<string, number> = {
     jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
     jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
@@ -34,7 +35,6 @@ function parseDueDate(dateVal: any): Date | null {
     }
   }
 
-  // Handle "DD/MM/YYYY" format
   if (String(dateVal).includes("/")) {
     const slashParts = String(dateVal).split("/");
     if (slashParts.length === 3) {
@@ -70,9 +70,9 @@ export async function GET() {
   try {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    const todayStr = today.toISOString().split("T")[0]; // YYYY-MM-DD format
+    const todayStr = today.toISOString().split("T")[0];
 
-    // Fetch eligible students
+    // Sabhi active students ko select karein
     const { data: students, error: studentErr } = await (supabase as any)
       .from("students")
       .select("*")
@@ -82,7 +82,7 @@ export async function GET() {
       return NextResponse.json({ success: false, error: studentErr?.message });
     }
 
-    // Fetch libraries map
+    // Sabhi libraries ka map banayein
     const { data: libraries } = await (supabase as any)
       .from("libraries")
       .select("id, name, phone");
@@ -95,25 +95,35 @@ export async function GET() {
     }
 
     let dispatchedCount = 0;
+    const auditLogs: any[] = [];
 
     for (const student of (students as any[])) {
       const balance = Number(student.balance_due || 0);
       const isPaid = student.status === "paid" && balance === 0;
-      if (isPaid) continue;
 
-      // Duplicate Lock: Aaj bhej chuke hain toh dobara nahi bhejega
+      if (isPaid) {
+        auditLogs.push({ name: student.name, lib: student.library_id, status: "Skipped: Paid" });
+        continue;
+      }
+
       if (student.last_reminder_date === todayStr) {
+        auditLogs.push({ name: student.name, lib: student.library_id, status: "Skipped: Already sent today" });
         continue;
       }
 
       const due = parseDueDate(student.due_date);
-      if (!due) continue;
+      if (!due) {
+        auditLogs.push({ name: student.name, lib: student.library_id, status: `Skipped: Invalid date (${student.due_date})` });
+        continue;
+      }
 
       const diffMs = today.getTime() - due.getTime();
       const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
 
-      // Agar due date aane mein abhi time hai (future date), toh skip karein
-      if (diffDays < 0) continue;
+      if (diffDays < 0) {
+        auditLogs.push({ name: student.name, lib: student.library_id, status: `Skipped: Future due date (${diffDays})` });
+        continue;
+      }
 
       const libObj = student.library_id ? libraryMap.get(String(student.library_id)) : null;
       const libName = libObj?.name || "लाइब्रेरी";
@@ -142,16 +152,13 @@ export async function GET() {
         msg = `*📩 ${libName} - विशेष अनुरोध (Day 5)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*बकाया राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, आपकी लाइब्रेरी फीस 5 दिनों से लंबित है। सीट की निरंतरता बनाए रखने के लिए आपसे सविनय निवेदन है कि आज प्रबंधन से संपर्क कर अपनी स्थिति स्पष्ट करने की कृपा करें, ताकि हम आपकी सीट सुरक्षित रख सकें।\n\n📞 *हेल्पडेस्क / संपर्क:* ${contact}`;
       }
 
-      // WhatsApp dispatch
       await sendWhatsAppAlert(student.phone, msg);
 
-      // Lock reminder for today in students table
       await (supabase as any)
         .from("students")
         .update({ last_reminder_date: todayStr })
         .eq("id", student.id);
 
-      // Log in history table
       await (supabase as any)
         .from("whatsapp_message_logs")
         .insert([
@@ -165,11 +172,13 @@ export async function GET() {
           },
         ]);
 
+      auditLogs.push({ name: student.name, lib: student.library_id, status: `Sent ${reminderType}` });
       dispatchedCount++;
-      await new Promise((r) => setTimeout(r, 2000));
+      // Delay ko thoda kam kiya taaki timeout na ho
+      await new Promise((r) => setTimeout(r, 1000));
     }
 
-    return NextResponse.json({ success: true, count: dispatchedCount });
+    return NextResponse.json({ success: true, count: dispatchedCount, audit: auditLogs });
   } catch (err: any) {
     return NextResponse.json({ success: false, error: err?.message || "Internal error" }, { status: 500 });
   }
