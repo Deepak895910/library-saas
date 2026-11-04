@@ -80,6 +80,7 @@ type LibraryInfo = {
   expiry_date: string;
   seats_config?: string;
   logo_url?: string;
+  auto_reminder_enabled?: boolean;
 };
 
 const SUPER_ADMIN_WHATSAPP = "919301530783";
@@ -483,6 +484,25 @@ function LibraryView() {
     joiningDate: todayStr,
   });
 
+  // Toggle Auto Reminder Handler
+  async function handleToggleAutoReminder() {
+    if (!checkOnlineStatus()) return;
+    if (!currentLib?.id) return;
+    const newStatus = !(currentLib.auto_reminder_enabled !== false);
+
+    const { error } = await supabase
+      .from("libraries")
+      .update({ auto_reminder_enabled: newStatus })
+      .eq("id", currentLib.id);
+
+    if (!error) {
+      setCurrentLib((prev) => (prev ? { ...prev, auto_reminder_enabled: newStatus } : null));
+      showToast(newStatus ? "✅ Auto WhatsApp Reminders ON ho gaye!" : "⏸️ Auto Reminders Pause ho gaye!");
+    } else {
+      alert("Error updating auto reminder setting: " + error.message);
+    }
+  }
+
   // Close three-dot menu on outside click
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -718,7 +738,7 @@ function LibraryView() {
             joiningDate: joining,
             lastPaidDate: lastPaid,
             lastPaymentMode: item.last_payment_mode || "Cash",
-            dueDate: dueDateText,
+            dueDate: item.due_date || dueDateText,
             status: balance > 0 ? "Due Today" : status,
             pendingMonths: pendingMonths,
             balanceDue: balance,
@@ -1492,7 +1512,9 @@ function LibraryView() {
             status: "paid",
             balance_due: 0,
             last_paid_date: paidUntilStr,
+            due_date: dueDateText,
             last_payment_mode: "Cash",
+            last_reminder_date: null,
           })
           .eq("id", s.id);
 
@@ -1647,7 +1669,9 @@ function LibraryView() {
         .from("students")
         .update({
           last_paid_date: newPaidUntilStr,
+          due_date: dueDateText,
           status: status === "Paid" ? "paid" : "due",
+          last_reminder_date: null,
         })
         .eq("id", extendStudent.id);
 
@@ -1720,6 +1744,7 @@ function LibraryView() {
         .from("students")
         .update({
           last_paid_date: latestValidDate,
+          due_date: dueDateText,
           status: status === "Paid" ? "paid" : "due",
         })
         .eq("id", historyStudent.id);
@@ -1799,13 +1824,18 @@ function LibraryView() {
     const chosenMode = paymentMode;
     const countMonths = durationMode === "months" ? collectMonths : 1;
 
+    // Calculate updated due date text
+    const { dueDateText, status } = calculateMonthlyDue(targetStudent.joiningDate, paidUntilStr);
+
     const { error: studentError } = await supabase
       .from("students")
       .update({
         status: newBalanceDue > 0 ? "due" : "paid",
         balance_due: newBalanceDue,
         last_paid_date: paidUntilStr,
+        due_date: dueDateText,
         last_payment_mode: chosenMode,
+        last_reminder_date: null,
       })
       .eq("id", targetStudent.id);
 
@@ -1831,8 +1861,6 @@ function LibraryView() {
     } catch (err) {
       console.warn("Ledger insert error:", err);
     }
-
-    const { dueDateText, status } = calculateMonthlyDue(targetStudent.joiningDate, paidUntilStr);
 
     setStudents((prev) =>
       prev.map((s) =>
@@ -2313,6 +2341,27 @@ ${
                       </strong>
                     </div>
                   </div>
+
+                  {/* AUTO REMINDER TOGGLE BUTTON */}
+                  <button
+                    type="button"
+                    onClick={handleToggleAutoReminder}
+                    className="w-full flex items-center justify-between px-3 py-2 text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 rounded-xl transition text-left font-bold"
+                  >
+                    <span className="flex items-center gap-2">
+                      <span>🤖</span>
+                      <span>Auto Reminders</span>
+                    </span>
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                        currentLib?.auto_reminder_enabled !== false
+                          ? "bg-emerald-100 text-emerald-800"
+                          : "bg-rose-100 text-rose-800"
+                      }`}
+                    >
+                      {currentLib?.auto_reminder_enabled !== false ? "ON" : "OFF"}
+                    </span>
+                  </button>
 
                   <button
                     type="button"
