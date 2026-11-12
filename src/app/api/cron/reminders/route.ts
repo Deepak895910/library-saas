@@ -130,6 +130,20 @@ export async function GET(request: NextRequest) {
     for (const student of (students as any[])) {
       const balance = Number(student.balance_due || 0);
 
+      // RULE 0: INDIVIDUAL REMINDER PAUSE
+      // Pause remains active THROUGH the selected date and resumes the next day.
+      const pauseUntil = student.reminder_pause_until
+        ? String(student.reminder_pause_until).slice(0, 10)
+        : null;
+      if (pauseUntil && pauseUntil >= todayStr) {
+        auditLogs.push({
+          name: student.name,
+          action: "SKIPPED",
+          reason: `Individual reminders paused through ${pauseUntil}`,
+        });
+        continue;
+      }
+
       // RULE 1: SAFEGUARD - Paid student with 0 balance will NEVER get a message
       if (student.status === "paid" && balance <= 0) {
         auditLogs.push({ name: student.name, action: "SKIPPED", reason: "Status is PAID & Balance is 0" });
