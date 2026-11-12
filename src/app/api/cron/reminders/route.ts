@@ -220,6 +220,9 @@ export async function GET(request: NextRequest) {
         msg = `*📩 ${libName} - विशेष अनुरोध (Day 5)*\n--------------------------------\n*विद्यार्थी का नाम:* ${student.name}\n*सीट नंबर:* ${seatInfo}\n*बकाया राशि:* ${formattedAmt}\n\nनमस्ते ${student.name} जी, आपकी लाइब्रेरी फीस 5 दिनों से लंबित है। सीट की निरंतरता बनाए रखने के लिए आपसे सविनय निवेदन है कि आज प्रबंधन से संपर्क कर अपनी स्थिति स्पष्ट करने की कृपा करें, ताकि हम आपकी सीट सुरक्षित रख सकें।\n\n📞 *हेल्पडेस्क / संपर्क:* ${contact}`;
       }
 
+      // Add a clear label and payment disclaimer to every automated student reminder.
+      msg = `*AUTO REMINDER*\n\n${msg}\n\n_यदि आपने फीस भर दी है, तो कृपया इस संदेश को अनदेखा करें।_`;
+
       reportDispatchedList.push({
         name: student.name,
         phone: student.phone,
