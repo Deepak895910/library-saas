@@ -29,6 +29,7 @@ type Student = {
   status: Status;
   pendingMonths: number;
   balanceDue?: number;
+  reminderPauseUntil?: string | null;
 };
 
 type FeedbackItem = {
@@ -101,13 +102,13 @@ async function sendWhatsAppAlert(
   fileBase64?: string,
   fileType: "pdf" | "image" = "pdf",
   fileName?: string
-) {
+): Promise<boolean> {
   try {
     let clean = phone.replace(/\D/g, "").slice(-10);
     if (clean.length === 10) {
       clean = "91" + clean;
     }
-    await fetch(WA_SERVER_URL, {
+    const response = await fetch(WA_SERVER_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -118,8 +119,11 @@ async function sendWhatsAppAlert(
         fileName,
       }),
     });
+    if (!response.ok) throw new Error(`WhatsApp API error (${response.status})`);
+    return true;
   } catch (err) {
     console.error("WhatsApp dispatch error:", err);
+    return false;
   }
 }
 
@@ -487,6 +491,13 @@ function LibraryView() {
   const [broadcastingStudents, setBroadcastingStudents] = useState(false);
   const [broadcastStudentProgress, setBroadcastStudentProgress] = useState({ current: 0, total: 0 });
 
+  // Individual WhatsApp message and per-student reminder pause
+  const [whatsAppStudent, setWhatsAppStudent] = useState<Student | null>(null);
+  const [whatsAppMessage, setWhatsAppMessage] = useState("");
+  const [sendingWhatsAppMessage, setSendingWhatsAppMessage] = useState(false);
+  const [reminderPauseDate, setReminderPauseDate] = useState("");
+  const [savingReminderPause, setSavingReminderPause] = useState(false);
+
   // Inquiries / Leads Multi-select & Broadcast (Auto API)
   const [selectedInquiryIds, setSelectedInquiryIds] = useState<string[]>([]);
   const [showInquiryBroadcastModal, setShowInquiryBroadcastModal] = useState(false);
@@ -816,6 +827,7 @@ function LibraryView() {
             status: balance > 0 ? "Due Today" : status,
             pendingMonths: pendingMonths,
             balanceDue: balance,
+            reminderPauseUntil: item.reminder_pause_until || null,
           };
         });
         setStudents(formattedStudents);
@@ -1253,8 +1265,77 @@ function LibraryView() {
   }
 
   function openWhatsApp(student: Student) {
-    sendWhatsAppAlert(student.phone, reminderText(student));
-    showToast(`WhatsApp reminder sent to ${student.name}!`);
+    const suggestedDate = new Date();
+    suggestedDate.setDate(suggestedDate.getDate() + 2);
+    setWhatsAppStudent(student);
+    setWhatsAppMessage(reminderText(student));
+    setReminderPauseDate(getLocalDateString(suggestedDate));
+  }
+
+  async function handleSendIndividualWhatsApp() {
+    if (!whatsAppStudent || !whatsAppMessage.trim()) {
+      alert("Kripya WhatsApp message likhein.");
+      return;
+    }
+    setSendingWhatsAppMessage(true);
+    try {
+      const sent = await sendWhatsAppAlert(whatsAppStudent.phone, whatsAppMessage.trim());
+      if (!sent) {
+        alert("WhatsApp message send nahi hua. API/server connection check karein.");
+        return;
+      }
+      showToast(`WhatsApp message ${whatsAppStudent.name} ke liye dispatch kar diya gaya.`);
+      setWhatsAppStudent(null);
+    } finally {
+      setSendingWhatsAppMessage(false);
+    }
+  }
+
+  async function handleSaveReminderPause() {
+    if (!whatsAppStudent || !currentLib?.id || !reminderPauseDate) {
+      alert("Kripya reminder resume hone ki date select karein.");
+      return;
+    }
+    if (reminderPauseDate < getLocalDateString()) {
+      alert("Aaj ya aaj ke baad ki date select karein.");
+      return;
+    }
+    setSavingReminderPause(true);
+    try {
+      const { error } = await supabase
+        .from("students")
+        .update({ reminder_pause_until: reminderPauseDate })
+        .eq("id", whatsAppStudent.id)
+        .eq("library_id", currentLib.id);
+      if (error) throw error;
+      setStudents((prev) => prev.map((student) => student.id === whatsAppStudent.id
+        ? { ...student, reminderPauseUntil: reminderPauseDate }
+        : student));
+      setWhatsAppStudent(null);
+      showToast(`${whatsAppStudent.name} ka auto reminder ${formatDate(reminderPauseDate)} tak pause rahega.`);
+    } catch (error: any) {
+      alert("Reminder pause save nahi hua: " + (error?.message || "Unknown error"));
+    } finally {
+      setSavingReminderPause(false);
+    }
+  }
+
+  async function handleResumeStudentReminder(student: Student) {
+    if (!currentLib?.id) return;
+    const { error } = await supabase
+      .from("students")
+      .update({ reminder_pause_until: null })
+      .eq("id", student.id)
+      .eq("library_id", currentLib.id);
+    if (error) {
+      alert("Reminder resume nahi hua: " + error.message);
+      return;
+    }
+    setStudents((prev) => prev.map((item) => item.id === student.id
+      ? { ...item, reminderPauseUntil: null }
+      : item));
+    if (whatsAppStudent?.id === student.id) setWhatsAppStudent(null);
+    showToast(`${student.name} ke auto reminders resume ho gaye.`);
   }
 
   const handlePhoneChange = (enteredPhone: string) => {
@@ -1708,6 +1789,7 @@ function LibraryView() {
             due_date: dueDateText,
             last_payment_mode: "Cash",
             last_reminder_date: null,
+            reminder_pause_until: null,
           })
           .eq("id", s.id);
 
@@ -1748,10 +1830,14 @@ function LibraryView() {
 
   function handleBulkWhatsAppReminders() {
     const selected = students.filter((s) => selectedStudentIds.includes(s.id));
-    const dueStudents = selected.filter((s) => s.status !== "Paid" && s.status !== "Left");
+    const today = getLocalDateString();
+    const dueStudents = selected.filter((s) =>
+      s.status !== "Paid" && s.status !== "Left" &&
+      !(s.reminderPauseUntil && s.reminderPauseUntil >= today)
+    );
 
     if (dueStudents.length === 0) {
-      alert("Selected students me kisi ki fees pending nahi hai!");
+      alert("Selected students me pending fees wala koi eligible student nahi hai. Ho sakta hai sabke reminders pause hon.");
       return;
     }
 
@@ -1866,6 +1952,7 @@ function LibraryView() {
           due_date: dueDateText,
           status: status === "Paid" ? "paid" : "due",
           last_reminder_date: null,
+          reminder_pause_until: null,
         })
         .eq("id", extendStudent.id);
 
@@ -2036,6 +2123,7 @@ function LibraryView() {
         due_date: dueDateText,
         last_payment_mode: chosenMode,
         last_reminder_date: null,
+        reminder_pause_until: null,
       })
       .eq("id", targetStudent.id);
 
@@ -3209,6 +3297,12 @@ ${
                             >
                               💬 WA
                             </button>
+                            {student.reminderPauseUntil && student.reminderPauseUntil >= todayStr && (
+                              <button type="button" onClick={() => handleResumeStudentReminder(student)}
+                                className="bg-amber-50 text-amber-800 border border-amber-200 font-bold py-1.5 px-2 rounded-xl text-[10px]">
+                                ⏸ {formatDate(student.reminderPauseUntil)} · Resume
+                              </button>
+                            )}
                           </>
                         )}
                         <button
@@ -3409,6 +3503,13 @@ ${
                                   >
                                     💬 WA
                                   </button>
+                                  {student.reminderPauseUntil && student.reminderPauseUntil >= todayStr && (
+                                    <button type="button" title={`Auto reminders paused until ${student.reminderPauseUntil}`}
+                                      onClick={() => handleResumeStudentReminder(student)}
+                                      className="rounded-lg border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-bold text-amber-800">
+                                      ⏸ Resume ({formatDate(student.reminderPauseUntil)})
+                                    </button>
+                                  )}
                                   <button
                                     type="button"
                                     onClick={() => handleOpenCollect(student)}
@@ -3932,6 +4033,71 @@ ${
               >
                 <span>{broadcastingStudents ? "Sending..." : "🚀 Auto API Send"}</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Individual Custom WhatsApp Message + Reminder Pause */}
+      {whatsAppStudent && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-5 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-extrabold text-slate-900">WhatsApp Message</h3>
+                <p className="text-xs text-slate-500">{whatsAppStudent.name} · {whatsAppStudent.phone} · Seat {whatsAppStudent.seatNo}</p>
+              </div>
+              <button type="button" onClick={() => setWhatsAppStudent(null)} className="text-slate-400 hover:text-slate-700 font-bold">✕</button>
+            </div>
+
+            <div>
+              <div className="mb-1.5 flex items-center justify-between gap-2">
+                <label className="text-xs font-bold text-slate-700">Message (aap edit kar sakte hain)</label>
+                <button type="button" onClick={() => setWhatsAppMessage(reminderText(whatsAppStudent))}
+                  className="text-[11px] rounded-lg bg-slate-100 px-2.5 py-1 font-bold text-slate-700 hover:bg-slate-200">
+                  Default Fee Reminder
+                </button>
+              </div>
+              <textarea rows={7} value={whatsAppMessage} onChange={(e) => setWhatsAppMessage(e.target.value)}
+                placeholder="Yahan apna custom WhatsApp message likhein..."
+                className="w-full rounded-xl border border-slate-200 p-3 text-sm outline-none focus:ring-2 focus:ring-emerald-500/20" />
+              <button type="button" disabled={sendingWhatsAppMessage || !whatsAppMessage.trim()} onClick={handleSendIndividualWhatsApp}
+                className="mt-2 w-full rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-extrabold text-white hover:bg-emerald-700 disabled:opacity-50">
+                {sendingWhatsAppMessage ? "Sending..." : "💬 Send WhatsApp Message"}
+              </button>
+            </div>
+
+            <div className="rounded-xl border border-amber-200 bg-amber-50/70 p-3 space-y-2.5">
+              <div>
+                <h4 className="text-sm font-extrabold text-amber-900">⏸ Auto Reminder Pause</h4>
+                <p className="mt-0.5 text-[11px] text-amber-800">Student ne fees baad me dene ko kaha hai? Is date tak automatic fee reminders rok dein.</p>
+              </div>
+              <label className="block text-xs font-bold text-slate-700">Reminder dobara kab shuru ho?</label>
+              <input type="date" min={getLocalDateString()} value={reminderPauseDate} onChange={(e) => setReminderPauseDate(e.target.value)}
+                className="w-full rounded-lg border border-amber-200 bg-white p-2.5 text-sm font-semibold text-slate-800" />
+              {whatsAppStudent.reminderPauseUntil && (
+                <p className="text-[11px] font-semibold text-amber-900">Abhi pause: {formatDate(whatsAppStudent.reminderPauseUntil)} tak</p>
+              )}
+              <div className="flex flex-wrap gap-2">
+                {[2, 3, 5, 7].map((days) => {
+                  const d = new Date(); d.setDate(d.getDate() + days);
+                  const date = getLocalDateString(d);
+                  return <button key={days} type="button" onClick={() => setReminderPauseDate(date)}
+                    className={`rounded-lg border px-3 py-1.5 text-[11px] font-bold ${reminderPauseDate === date ? "border-amber-500 bg-amber-200 text-amber-950" : "border-amber-200 bg-white text-amber-800"}`}>
+                    {days} din
+                  </button>;
+                })}
+              </div>
+              <button type="button" disabled={savingReminderPause || !reminderPauseDate} onClick={handleSaveReminderPause}
+                className="w-full rounded-xl bg-amber-600 px-4 py-2.5 text-xs font-extrabold text-white hover:bg-amber-700 disabled:opacity-50">
+                {savingReminderPause ? "Saving..." : "⏸ Save & Pause Auto Reminder"}
+              </button>
+              {whatsAppStudent.reminderPauseUntil && (
+                <button type="button" onClick={() => handleResumeStudentReminder(whatsAppStudent)}
+                  className="w-full rounded-xl border border-amber-300 bg-white px-4 py-2 text-xs font-bold text-amber-900 hover:bg-amber-100">
+                  ▶ Resume Reminder Now
+                </button>
+              )}
             </div>
           </div>
         </div>
