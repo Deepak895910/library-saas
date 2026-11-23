@@ -30,6 +30,8 @@ type Student = {
   pendingMonths: number;
   balanceDue?: number;
   reminderPauseUntil?: string | null;
+  photoPath?: string | null;
+  photoUrl?: string | null;
 };
 
 type FeedbackItem = {
@@ -70,6 +72,9 @@ type PaymentRecord = {
   paid_until_date: string | null;
   created_at: string;
 };
+
+type LibraryNote = { id: string; library_id: string; title: string; content: string; created_at: string; updated_at?: string };
+type LibraryLocker = { id: string; library_id: string; locker_no: string; student_id: string | null; student_name: string | null; remarks: string | null; created_at: string };
 
 type ExpenseRecord = {
   id: string;
@@ -303,7 +308,7 @@ function downloadReceiptPDF(
   doc.setTextColor(71, 85, 105);
   doc.text(`Receipt No: ${receiptNo}`, 14, 46);
   doc.text(`Payment Date: ${dateStr}`, 14, 52);
-  doc.text(`Status: PAID & VERIFIED`, 134, 46, { align: "right" });
+  doc.text(`Status: PAYMENT RECEIVED`, 134, 46, { align: "right" });
   doc.text(`Payment Mode: ${mode}`, 134, 52, { align: "right" });
 
   doc.setFillColor(248, 250, 252);
@@ -459,6 +464,20 @@ function LibraryView() {
   const [formError, setFormError] = useState("");
   const [uploadingLogo, setUploadingLogo] = useState(false);
 
+  const [showNotesModal, setShowNotesModal] = useState(false);
+  const [showLockersModal, setShowLockersModal] = useState(false);
+  const [libraryNotes, setLibraryNotes] = useState<LibraryNote[]>([]);
+  const [libraryLockers, setLibraryLockers] = useState<LibraryLocker[]>([]);
+  const [noteTitle, setNoteTitle] = useState("");
+  const [noteContent, setNoteContent] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [lockerNo, setLockerNo] = useState("");
+  const [lockerStudentId, setLockerStudentId] = useState("");
+  const [lockerRemarks, setLockerRemarks] = useState("");
+  const [editingLockerId, setEditingLockerId] = useState<string | null>(null);
+  const [managerLoading, setManagerLoading] = useState(false);
+  const [managerSaving, setManagerSaving] = useState(false);
+
   // Top Menu Dropdown State
   const [showTopMenu, setShowTopMenu] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -473,6 +492,8 @@ function LibraryView() {
   const [viewStudent, setViewStudent] = useState<Student | null>(null);
 
   const [savingStudent, setSavingStudent] = useState(false);
+  const [studentPhotoFile, setStudentPhotoFile] = useState<File | null>(null);
+  const [removeStudentPhoto, setRemoveStudentPhoto] = useState(false);
   const [rejoiningStudent, setRejoiningStudent] = useState<Student | null>(null);
 
   const [allSeatNames, setAllSeatNames] = useState<string[]>([]);
@@ -583,6 +604,74 @@ function LibraryView() {
     } else {
       alert("Error updating auto reminder setting: " + error.message);
     }
+  }
+
+  async function openManager(kind: "notes" | "lockers") {
+    if (!currentLib?.id) return;
+    setShowTopMenu(false);
+    if (kind === "notes") setShowNotesModal(true);
+    else setShowLockersModal(true);
+    setManagerLoading(true);
+    try {
+      const table = kind === "notes" ? "library_notes" : "library_lockers";
+      const { data, error } = await supabase.from(table).select("*").eq("library_id", currentLib.id).order("created_at", { ascending: false });
+      if (error) throw error;
+      if (kind === "notes") setLibraryNotes((data || []) as LibraryNote[]);
+      else setLibraryLockers((data || []) as LibraryLocker[]);
+    } catch (err: any) {
+      alert("Data load failed: " + (err?.message || "Unknown error") + ". Supabase SQL/RLS setup check karein.");
+    } finally { setManagerLoading(false); }
+  }
+
+  async function saveLibraryNote(e: React.FormEvent) {
+    e.preventDefault();
+    if (!currentLib?.id || !noteTitle.trim() || !noteContent.trim() || managerSaving) return;
+    setManagerSaving(true);
+    try {
+      const payload = { title: noteTitle.trim(), content: noteContent.trim(), updated_at: new Date().toISOString() };
+      const query = editingNoteId
+        ? supabase.from("library_notes").update(payload).eq("id", editingNoteId).eq("library_id", currentLib.id)
+        : supabase.from("library_notes").insert({ ...payload, library_id: currentLib.id });
+      const { error } = await query;
+      if (error) throw error;
+      setNoteTitle(""); setNoteContent(""); setEditingNoteId(null);
+      await openManager("notes");
+      showToast("Note saved successfully");
+    } catch (err: any) { alert("Note save failed: " + err.message); }
+    finally { setManagerSaving(false); }
+  }
+
+  async function deleteLibraryNote(id: string) {
+    if (!currentLib?.id || !confirm("Delete this note?")) return;
+    const { error } = await supabase.from("library_notes").delete().eq("id", id).eq("library_id", currentLib.id);
+    if (error) alert("Delete failed: " + error.message);
+    else setLibraryNotes(prev => prev.filter(n => n.id !== id));
+  }
+
+  async function saveLibraryLocker(e: React.FormEvent) {
+    e.preventDefault();
+    if (!currentLib?.id || !lockerNo.trim() || managerSaving) return;
+    setManagerSaving(true);
+    try {
+      const student = students.find(s => s.id === lockerStudentId);
+      const payload = { locker_no: lockerNo.trim(), student_id: student?.id || null, student_name: student?.name || null, remarks: lockerRemarks.trim() || null };
+      const query = editingLockerId
+        ? supabase.from("library_lockers").update(payload).eq("id", editingLockerId).eq("library_id", currentLib.id)
+        : supabase.from("library_lockers").insert({ ...payload, library_id: currentLib.id });
+      const { error } = await query;
+      if (error) throw error;
+      setLockerNo(""); setLockerStudentId(""); setLockerRemarks(""); setEditingLockerId(null);
+      await openManager("lockers");
+      showToast("Locker saved successfully");
+    } catch (err: any) { alert("Locker save failed: " + err.message); }
+    finally { setManagerSaving(false); }
+  }
+
+  async function deleteLibraryLocker(id: string) {
+    if (!currentLib?.id || !confirm("Delete this locker record?")) return;
+    const { error } = await supabase.from("library_lockers").delete().eq("id", id).eq("library_id", currentLib.id);
+    if (error) alert("Delete failed: " + error.message);
+    else setLibraryLockers(prev => prev.filter(l => l.id !== id));
   }
 
   // Close three-dot menu on outside click
@@ -827,9 +916,17 @@ function LibraryView() {
             status: balance > 0 ? "Due Today" : status,
             pendingMonths: pendingMonths,
             balanceDue: balance,
+            photoPath: item.photo_path || null,
             reminderPauseUntil: item.reminder_pause_until || null,
           };
         });
+        // Private bucket: generate temporary URLs for the student list/profile.
+        const withPhotos = await Promise.all(formattedStudents.map(async (student) => {
+          if (!student.photoPath) return student;
+          const { data } = await supabase.storage.from("student-photos").createSignedUrl(student.photoPath, 3600);
+          return { ...student, photoUrl: data?.signedUrl || null };
+        }));
+        formattedStudents = withPhotos;
         setStudents(formattedStudents);
       }
 
@@ -1340,6 +1437,7 @@ function LibraryView() {
 
   const handlePhoneChange = (enteredPhone: string) => {
     const cleanPhone = enteredPhone.replace(/\D/g, "").slice(-10);
+    if (cleanPhone.length < 10) setRejoiningStudent(null);
     setForm((prev) => ({ ...prev, phone: cleanPhone }));
 
     if (!editingId && cleanPhone.length === 10) {
@@ -1347,6 +1445,8 @@ function LibraryView() {
       if (existing) {
         if (existing.status === "Left") {
           setRejoiningStudent(existing);
+          setStudentPhotoFile(null);
+          setRemoveStudentPhoto(false);
           setForm((prev) => ({
             ...prev,
             name: existing.name,
@@ -1623,6 +1723,8 @@ function LibraryView() {
   }
 
   function handleOpenAdd(suggestedSeat = "") {
+    setStudentPhotoFile(null);
+    setRemoveStudentPhoto(false);
     setEditingId(null);
     setRejoiningStudent(null);
     setSavingStudent(false);
@@ -1639,6 +1741,8 @@ function LibraryView() {
   }
 
   function handleOpenEdit(student: Student) {
+    setStudentPhotoFile(null);
+    setRemoveStudentPhoto(false);
     setEditingId(student.id);
     setRejoiningStudent(null);
     setSavingStudent(false);
@@ -2075,10 +2179,21 @@ function LibraryView() {
 
     const totalCollected = Number(customAmount) > 0 ? Number(customAmount) : currentTotalReq;
 
-    const currentOldBalance = collectStudent.balanceDue || 0;
-    const newBalanceDue = isFullSettlement
-      ? 0
-      : Math.max(0, currentOldBalance + currentTotalReq - totalCollected);
+    const currentOldBalance = Math.max(0, Number(collectStudent.balanceDue) || 0);
+    // The outstanding balance is the unpaid part of the existing cycle.
+    // Do not add another full month for that same cycle.
+    if (currentOldBalance > 0) {
+      currentTotalReq = durationMode === "months"
+        ? currentOldBalance + collectStudent.monthlyFee * Math.max(0, collectMonths - 1)
+        : currentOldBalance + currentTotalReq;
+    }
+    if (!Number.isFinite(totalCollected) || totalCollected <= 0) {
+      alert("Valid payment amount enter karein."); return;
+    }
+    if (totalCollected > currentTotalReq && !isFullSettlement) {
+      alert("Payment due se zyada hai. Advance payment ke liye alag cycle select karein."); return;
+    }
+    const newBalanceDue = isFullSettlement ? 0 : Math.max(0, currentTotalReq - totalCollected);
 
     const jParts = (collectStudent.joiningDate || todayStr).split("-").map(Number);
     const joinDay = jParts[2] || 1;
@@ -2113,41 +2228,25 @@ function LibraryView() {
     // Calculate updated due date text
     const { dueDateText, status } = calculateMonthlyDue(targetStudent.joiningDate, paidUntilStr);
 
-    const { error: studentError } = await supabase
-      .from("students")
-      .update({
-        status: newBalanceDue > 0 ? "due" : "paid",
-        balance_due: newBalanceDue,
-        last_paid_date: paidUntilStr,
-        last_payment_date: paymentDateUsed,
-        due_date: dueDateText,
-        last_payment_mode: chosenMode,
-        last_reminder_date: null,
-        reminder_pause_until: null,
-      })
-      .eq("id", targetStudent.id);
-
-    if (studentError) {
-      alert("Payment save nahi hui: " + studentError.message);
-      return;
+    const { data: ledgerRow, error: ledgerError } = await supabase.from("fee_payments").insert({
+      library_id: currentLib.id, student_id: targetStudent.id,
+      student_name: targetStudent.name, seat_no: targetStudent.seatNo || "FLOATING",
+      amount_paid: totalCollected, months_count: countMonths, payment_mode: chosenMode,
+      payment_date: paymentDateUsed, paid_until_date: paidUntilStr,
+    }).select("id").single();
+    if (ledgerError || !ledgerRow) {
+      alert("Payment history save nahi hui: " + (ledgerError?.message || "Unknown error")); return;
     }
-
-    try {
-      await supabase.from("fee_payments").insert([
-        {
-          library_id: currentLib.id,
-          student_id: targetStudent.id,
-          student_name: targetStudent.name,
-          seat_no: targetStudent.seatNo || "FLOATING",
-          amount_paid: totalCollected,
-          months_count: countMonths,
-          payment_mode: chosenMode,
-          payment_date: paymentDateUsed,
-          paid_until_date: paidUntilStr,
-        },
-      ]);
-    } catch (err) {
-      console.warn("Ledger insert error:", err);
+    const { error: studentError } = await supabase.from("students").update({
+      status: newBalanceDue > 0 ? "due" : "paid",
+      balance_due: newBalanceDue, last_paid_date: paidUntilStr,
+      last_payment_date: paymentDateUsed, due_date: dueDateText,
+      last_payment_mode: chosenMode, last_reminder_date: null, reminder_pause_until: null,
+    }).eq("id", targetStudent.id).eq("library_id", currentLib.id);
+    if (studentError) {
+      const { error: rollbackError } = await supabase.from("fee_payments").delete().eq("id", ledgerRow.id).eq("library_id", currentLib.id);
+      alert("Student payment update failed: " + studentError.message + (rollbackError ? ". Ledger rollback bhi fail hua; manual reconciliation zaroori hai." : ""));
+      return;
     }
 
     setStudents((prev) =>
@@ -2202,7 +2301,7 @@ ${
     ? `*शेष बकाया राशि:* ${formatINR(newBalanceDue)}`
     : `*वैधता (Valid Upto):* ${formatDate(paidUntilStr)}`
 }
-*स्थिति:* सफल (Paid & Verified) ✅
+*स्थिति:* भुगतान प्राप्त हुआ ✅
 
 📄 आपकी ऑरिजिनल फीस रसीद (PDF) इस मैसेज के साथ संलग्न है।
 
@@ -2239,6 +2338,57 @@ ${
 
     setAllSeatNames(parsed);
     showToast(`Total ${parsed.length} seats Supabase me save ho gayi!`);
+  }
+
+  // Compress locally before upload; the original camera photo is never sent to Storage.
+  async function compressStudentPhoto(file: File): Promise<File> {
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      throw new Error("Sirf JPG, PNG ya WEBP photo select karein.");
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      throw new Error("Original photo 20 MB se chhoti honi chahiye.");
+    }
+    const bitmap = await createImageBitmap(file);
+    try {
+      const scale = Math.min(1, 800 / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Photo compression available nahi hai.");
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const toBlob = (quality: number) => new Promise<Blob>((resolve, reject) => {
+        canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("Photo compress nahi ho payi.")), "image/webp", quality);
+      });
+      let blob = await toBlob(0.78);
+      if (blob.type !== "image/webp") throw new Error("Browser WebP compression support nahi karta.");
+      for (const quality of [0.65, 0.5, 0.35]) {
+        if (blob.size <= 2 * 1024 * 1024) break;
+        blob = await toBlob(quality);
+      }
+      if (blob.size > 2 * 1024 * 1024) throw new Error("Compressed photo 2 MB se badi hai.");
+      return new File([blob], "student-photo.webp", { type: "image/webp", lastModified: Date.now() });
+    } finally {
+      bitmap.close();
+    }
+  }
+
+  async function saveStudentPhoto(studentId: string, oldPath?: string | null) {
+    if (!currentLib?.id) return { photoPath: oldPath || null, photoUrl: null as string | null };
+    if (removeStudentPhoto && !studentPhotoFile) {
+      if (oldPath) {
+        const { error } = await supabase.storage.from("student-photos").remove([oldPath]);
+        if (error) throw error;
+      }
+      return { photoPath: null, photoUrl: null };
+    }
+    if (!studentPhotoFile) return { photoPath: oldPath || null, photoUrl: null };
+    const file = await compressStudentPhoto(studentPhotoFile);
+    const path = `${currentLib.id}/${studentId}/${Date.now()}.webp`;
+    const { error } = await supabase.storage.from("student-photos").upload(path, file, { upsert: false, contentType: file.type });
+    if (error) throw error;
+    const { data } = await supabase.storage.from("student-photos").createSignedUrl(path, 3600);
+    return { photoPath: path, photoUrl: data?.signedUrl || null };
   }
 
   async function handleSaveStudent(event: React.FormEvent) {
@@ -2301,6 +2451,12 @@ ${
           .eq("id", rejoiningStudent.id);
 
         if (error) throw error;
+        let photoResult = { photoPath: rejoiningStudent.photoPath || null, photoUrl: rejoiningStudent.photoUrl || null };
+        if (studentPhotoFile || removeStudentPhoto) {
+          photoResult = await saveStudentPhoto(rejoiningStudent.id, rejoiningStudent.photoPath);
+          const { error: photoDbError } = await supabase.from("students").update({ photo_path: photoResult.photoPath }).eq("id", rejoiningStudent.id).eq("library_id", currentLib?.id);
+          if (photoDbError) throw photoDbError;
+        }
 
         setStudents((prev) =>
           prev.map((s) =>
@@ -2308,12 +2464,14 @@ ${
               ? {
                   ...s,
                   ...rePayload,
+                  ...photoResult,
+                  joiningDate: form.joiningDate,
                   seatNo,
                   billingCycleDay: Number(form.joiningDate.split("-")[2]) || 1,
                   lastPaidDate: null,
                   lastPaymentDate: null,
-                  status: "Due Today",
-                  pendingMonths: 1,
+                  status,
+                  pendingMonths,
                   balanceDue: 0,
                 }
               : s
@@ -2366,12 +2524,19 @@ ${
           .eq("id", editingId);
 
         if (error) throw error;
+        let photoResult = { photoPath: curr?.photoPath || null, photoUrl: curr?.photoUrl || null };
+        if (studentPhotoFile || removeStudentPhoto) {
+          photoResult = await saveStudentPhoto(editingId, curr?.photoPath);
+          const { error: photoDbError } = await supabase.from("students").update({ photo_path: photoResult.photoPath }).eq("id", editingId).eq("library_id", currentLib?.id);
+          if (photoDbError) throw photoDbError;
+        }
 
         setStudents((prev) =>
           prev.map((s) =>
             s.id === editingId
               ? {
                   ...s,
+                  ...photoResult,
                   seatNo,
                   name: editPayload.name,
                   phone: editPayload.phone,
@@ -2432,9 +2597,16 @@ ${
 
       if (data && data.length > 0) {
         const added = data[0];
+        let photoResult = { photoPath: null as string | null, photoUrl: null as string | null };
+        if (studentPhotoFile) {
+          photoResult = await saveStudentPhoto(added.id);
+          const { error: photoDbError } = await supabase.from("students").update({ photo_path: photoResult.photoPath }).eq("id", added.id).eq("library_id", currentLib?.id);
+          if (photoDbError) throw photoDbError;
+        }
         setStudents((prev) => [
           {
             id: added.id,
+            ...photoResult,
             seatNo: added.seat_no,
             name: added.name,
             phone: added.phone,
@@ -2672,6 +2844,9 @@ ${
                       </strong>
                     </div>
                   </div>
+
+                  <button type="button" onClick={() => openManager("notes")} className="w-full flex items-center gap-2.5 px-3 py-2 text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 rounded-xl transition text-left font-bold"><span>📝</span><span>Notes Management</span></button>
+                  <button type="button" onClick={() => openManager("lockers")} className="w-full flex items-center gap-2.5 px-3 py-2 text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 rounded-xl transition text-left font-bold"><span>🔐</span><span>Locker Management</span></button>
 
                   {/* AUTO REMINDER TOGGLE BUTTON */}
                   <button
@@ -3219,6 +3394,7 @@ ${
                             >
                               {student.seatNo}
                             </span>
+                            {student.photoUrl ? <img src={student.photoUrl} alt="" className="h-8 w-8 rounded-full object-cover border border-slate-200 shrink-0" /> : <span className="h-8 w-8 rounded-full bg-indigo-50 text-indigo-700 flex items-center justify-center text-xs font-bold shrink-0">{student.name.charAt(0)}</span>}
                             <span className="font-extrabold text-slate-900 text-sm truncate hover:text-indigo-600 underline-offset-2 hover:underline">
                               {student.name}
                             </span>
@@ -4296,7 +4472,10 @@ ${
                 <span className="text-[10px] font-black uppercase text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-100">
                   Student Profile
                 </span>
-                <h3 className="text-lg font-black text-slate-950 mt-1">{viewStudent.name}</h3>
+                <div className="flex items-center gap-3 mt-2">
+                  {viewStudent.photoUrl ? <img src={viewStudent.photoUrl} alt="Student" className="h-14 w-14 rounded-2xl object-cover border border-slate-200" /> : <div className="h-14 w-14 rounded-2xl bg-indigo-100 text-indigo-700 flex items-center justify-center font-black text-xl">{viewStudent.name.charAt(0)}</div>}
+                  <h3 className="text-lg font-black text-slate-950">{viewStudent.name}</h3>
+                </div>
                 <p className="text-xs text-slate-500 font-mono">Phone: {viewStudent.phone}</p>
               </div>
               <button
@@ -4587,6 +4766,11 @@ ${
               </div>
             )}
 
+            <div className="rounded-xl border border-slate-200 p-3 bg-slate-50">
+              <label className="text-xs font-bold text-slate-700 block mb-2">Student Photo (Optional, JPG/PNG/WEBP, auto-compress to WebP 800px; original max 20 MB)</label>
+              <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e) => { setStudentPhotoFile(e.target.files?.[0] || null); setRemoveStudentPhoto(false); }} className="block w-full text-xs" />
+              {(editingId || rejoiningStudent) && <label className="flex gap-2 items-center mt-2 text-xs text-slate-600"><input type="checkbox" checked={removeStudentPhoto} onChange={(e) => { setRemoveStudentPhoto(e.target.checked); if(e.target.checked) setStudentPhotoFile(null); }} /> Remove existing photo</label>}
+            </div>
             {formError && <div className="text-xs text-red-600 font-bold bg-red-50 p-2 rounded-lg border border-red-200">⚠️ {formError}</div>}
             
             <div className="grid gap-3">
@@ -5127,6 +5311,38 @@ ${
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Notes Management — independent from existing student/seat features */}
+      {showNotesModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 p-3 backdrop-blur-sm">
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="flex justify-between items-center mb-4"><h2 className="text-lg font-black text-slate-900">📝 Library Notes</h2><button type="button" onClick={() => setShowNotesModal(false)} className="text-xl font-bold text-slate-500">✕</button></div>
+            <form onSubmit={saveLibraryNote} className="space-y-3 rounded-xl bg-slate-50 border border-slate-200 p-4">
+              <input required maxLength={120} value={noteTitle} onChange={e => setNoteTitle(e.target.value)} placeholder="Note title" className="w-full rounded-lg border border-slate-200 p-2.5 text-sm" />
+              <textarea required rows={4} value={noteContent} onChange={e => setNoteContent(e.target.value)} placeholder="Write your note..." className="w-full rounded-lg border border-slate-200 p-2.5 text-sm" />
+              <div className="flex gap-2"><button disabled={managerSaving} className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{editingNoteId ? "Update Note" : "Save Note"}</button>{editingNoteId && <button type="button" onClick={() => {setEditingNoteId(null);setNoteTitle("");setNoteContent("");}} className="rounded-lg bg-white border px-4 py-2 text-xs">Cancel Edit</button>}</div>
+            </form>
+            <div className="mt-4 space-y-2">{managerLoading ? <p className="text-sm">Loading...</p> : libraryNotes.length === 0 ? <p className="text-sm text-slate-500">No notes yet.</p> : libraryNotes.map(note => <div key={note.id} className="rounded-xl border p-3"><div className="flex items-start justify-between gap-2"><div><h3 className="font-bold text-sm">{note.title}</h3><p className="whitespace-pre-wrap break-words text-xs text-slate-600 mt-1">{note.content}</p></div><div className="flex gap-2 shrink-0"><button type="button" onClick={() => {setEditingNoteId(note.id);setNoteTitle(note.title);setNoteContent(note.content);}} className="text-xs text-indigo-600 font-bold">Edit</button><button type="button" onClick={() => deleteLibraryNote(note.id)} className="text-xs text-rose-600 font-bold">Delete</button></div></div></div>)}</div>
+          </div>
+        </div>
+      )}
+
+      {/* Locker Management */}
+      {showLockersModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/60 p-3 backdrop-blur-sm">
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl bg-white p-5 shadow-2xl">
+            <div className="flex justify-between items-center mb-4"><h2 className="text-lg font-black text-slate-900">🔐 Locker Management</h2><button type="button" onClick={() => setShowLockersModal(false)} className="text-xl font-bold text-slate-500">✕</button></div>
+            <div className="flex gap-2 mb-4 text-xs font-bold"><span className="rounded-lg bg-slate-100 px-3 py-2">Total: {libraryLockers.length}</span><span className="rounded-lg bg-emerald-50 text-emerald-700 px-3 py-2">Available: {libraryLockers.filter(l => !l.student_id).length}</span><span className="rounded-lg bg-amber-50 text-amber-700 px-3 py-2">Occupied: {libraryLockers.filter(l => !!l.student_id).length}</span></div>
+            <form onSubmit={saveLibraryLocker} className="space-y-3 rounded-xl bg-slate-50 border border-slate-200 p-4">
+              <input required maxLength={30} value={lockerNo} onChange={e => setLockerNo(e.target.value)} placeholder="Locker number (e.g. L01)" className="w-full rounded-lg border border-slate-200 p-2.5 text-sm" />
+              <select value={lockerStudentId} onChange={e => setLockerStudentId(e.target.value)} className="w-full rounded-lg border border-slate-200 p-2.5 text-sm"><option value="">Available — not assigned</option>{students.filter(s => s.status !== "Left").map(s => <option key={s.id} value={s.id}>{s.name} · Seat {s.seatNo}</option>)}</select>
+              <input value={lockerRemarks} onChange={e => setLockerRemarks(e.target.value)} placeholder="Remarks (optional)" className="w-full rounded-lg border border-slate-200 p-2.5 text-sm" />
+              <div className="flex gap-2"><button disabled={managerSaving} className="rounded-lg bg-indigo-600 px-4 py-2 text-xs font-bold text-white disabled:opacity-50">{editingLockerId ? "Update Locker" : "Add Locker"}</button>{editingLockerId && <button type="button" onClick={() => {setEditingLockerId(null);setLockerNo("");setLockerStudentId("");setLockerRemarks("");}} className="rounded-lg bg-white border px-4 py-2 text-xs">Cancel Edit</button>}</div>
+            </form>
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">{managerLoading ? <p className="text-sm">Loading...</p> : libraryLockers.map(locker => <div key={locker.id} className="rounded-xl border border-slate-200 p-3"><div className="flex justify-between"><strong className="text-sm">🔐 {locker.locker_no}</strong><span className={`text-[10px] font-bold rounded-full px-2 py-1 ${locker.student_id ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>{locker.student_id ? "Occupied" : "Available"}</span></div><p className="text-xs text-slate-600 mt-2">{locker.student_name || "Unassigned"}</p>{locker.remarks && <p className="text-xs text-slate-500 mt-1">{locker.remarks}</p>}<div className="flex gap-3 mt-3"><button type="button" onClick={() => {setEditingLockerId(locker.id);setLockerNo(locker.locker_no);setLockerStudentId(locker.student_id || "");setLockerRemarks(locker.remarks || "");}} className="text-xs text-indigo-600 font-bold">Edit / Assign</button><button type="button" onClick={() => deleteLibraryLocker(locker.id)} className="text-xs text-rose-600 font-bold">Delete</button></div></div>)}</div>
           </div>
         </div>
       )}
