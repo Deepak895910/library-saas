@@ -2373,7 +2373,7 @@ ${
     }
   }
 
-  async function saveStudentPhoto(studentId: string, oldPath?: string | null) {
+  async function saveStudentPhoto(studentId: string, oldPath?: string | null, compressedFile?: File | null) {
     if (!currentLib?.id) return { photoPath: oldPath || null, photoUrl: null as string | null };
     if (removeStudentPhoto && !studentPhotoFile) {
       if (oldPath) {
@@ -2383,7 +2383,7 @@ ${
       return { photoPath: null, photoUrl: null };
     }
     if (!studentPhotoFile) return { photoPath: oldPath || null, photoUrl: null };
-    const file = await compressStudentPhoto(studentPhotoFile);
+    const file = compressedFile || await compressStudentPhoto(studentPhotoFile);
     const path = `${currentLib.id}/${studentId}/${Date.now()}.webp`;
     const { error } = await supabase.storage.from("student-photos").upload(path, file, { upsert: false, contentType: file.type });
     if (error) throw error;
@@ -2427,8 +2427,10 @@ ${
         }
       }
 
+      const compressedPhoto = studentPhotoFile ? await compressStudentPhoto(studentPhotoFile) : null;
+
       if (rejoiningStudent) {
-        const { dueDateText, pendingMonths } = calculateMonthlyDue(form.joiningDate, null);
+        const { dueDateText, status, pendingMonths } = calculateMonthlyDue(form.joiningDate, null);
         const rePayload: any = {
           name: form.name.trim(),
           phone: cleanPhone,
@@ -2453,7 +2455,7 @@ ${
         if (error) throw error;
         let photoResult = { photoPath: rejoiningStudent.photoPath || null, photoUrl: rejoiningStudent.photoUrl || null };
         if (studentPhotoFile || removeStudentPhoto) {
-          photoResult = await saveStudentPhoto(rejoiningStudent.id, rejoiningStudent.photoPath);
+          photoResult = await saveStudentPhoto(rejoiningStudent.id, rejoiningStudent.photoPath, compressedPhoto);
           const { error: photoDbError } = await supabase.from("students").update({ photo_path: photoResult.photoPath }).eq("id", rejoiningStudent.id).eq("library_id", currentLib?.id);
           if (photoDbError) throw photoDbError;
         }
@@ -2526,7 +2528,7 @@ ${
         if (error) throw error;
         let photoResult = { photoPath: curr?.photoPath || null, photoUrl: curr?.photoUrl || null };
         if (studentPhotoFile || removeStudentPhoto) {
-          photoResult = await saveStudentPhoto(editingId, curr?.photoPath);
+          photoResult = await saveStudentPhoto(editingId, curr?.photoPath, compressedPhoto);
           const { error: photoDbError } = await supabase.from("students").update({ photo_path: photoResult.photoPath }).eq("id", editingId).eq("library_id", currentLib?.id);
           if (photoDbError) throw photoDbError;
         }
@@ -2599,7 +2601,7 @@ ${
         const added = data[0];
         let photoResult = { photoPath: null as string | null, photoUrl: null as string | null };
         if (studentPhotoFile) {
-          photoResult = await saveStudentPhoto(added.id);
+          photoResult = await saveStudentPhoto(added.id, null, compressedPhoto);
           const { error: photoDbError } = await supabase.from("students").update({ photo_path: photoResult.photoPath }).eq("id", added.id).eq("library_id", currentLib?.id);
           if (photoDbError) throw photoDbError;
         }
